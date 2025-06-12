@@ -12,11 +12,11 @@ from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper
 class BaseModel(nn.Module):
     def __init__(self, args, device):
         super().__init__()
+        self.is_causal = args.generator_type == "causal"
         self._initialize_models(args, device)
 
         self.device = device
         self.args = args
-        self.is_causal = args.generator_type == "causal"
         self.dtype = torch.bfloat16 if args.mixed_precision else torch.float32
         if hasattr(args, "denoising_step_list"):
             self.denoising_step_list = torch.tensor(args.denoising_step_list, dtype=torch.long)
