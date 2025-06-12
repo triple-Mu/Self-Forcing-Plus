@@ -232,6 +232,8 @@ class DMD(SelfForcingModel):
             denoised_timestep_to=denoised_timestep_to
         )
 
+        del pred_image, gradient_mask, denoised_timestep_from, denoised_timestep_to
+
         return dmd_loss, dmd_log_dict
 
     def critic_loss(

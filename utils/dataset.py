@@ -34,6 +34,25 @@ class TextDataset(Dataset):
         return batch
 
 
+class TextFolderDataset(Dataset):
+    def __init__(self, data_path):
+        self.texts = []
+        num = 0
+        for file in os.listdir(data_path):
+            if file.endswith(".txt"):
+                num += 1
+                with open(os.path.join(data_path, file), "r") as f:
+                    self.texts.append(f.read().strip())
+                if num >= 50000:
+                    break
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        return {"prompts": self.texts[idx], "idx": idx}
+
+
 class ODERegressionLMDBDataset(Dataset):
     def __init__(self, data_path: str, max_pair: int = int(1e8)):
         self.env = lmdb.open(data_path, readonly=True,

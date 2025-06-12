@@ -4,7 +4,7 @@ from torch import nn
 import torch.distributed as dist
 import torch
 
-from pipeline import SelfForcingTrainingPipeline
+from pipeline import SelfForcingTrainingPipeline, BidirectionalTrainingPipeline
 from utils.loss import get_denoising_loss
 from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper
 
@@ -16,6 +16,7 @@ class BaseModel(nn.Module):
 
         self.device = device
         self.args = args
+        self.is_causal = args.generator_type == "causal"
         self.dtype = torch.bfloat16 if args.mixed_precision else torch.float32
         if hasattr(args, "denoising_step_list"):
             self.denoising_step_list = torch.tensor(args.denoising_step_list, dtype=torch.long)
@@ -24,10 +25,15 @@ class BaseModel(nn.Module):
                 self.denoising_step_list = timesteps[1000 - self.denoising_step_list]
 
     def _initialize_models(self, args, device):
-        self.real_model_name = getattr(args, "real_name", "Wan2.1-T2V-1.3B")
-        self.fake_model_name = getattr(args, "fake_name", "Wan2.1-T2V-1.3B")
+        self.real_model_name = getattr(args, "real_name", "Wan2.1-T2V-14B")
+        self.fake_model_name = getattr(args, "fake_name", "Wan2.1-T2V-14B")
+        self.generator_name = getattr(args, "generator_name", "Wan2.1-T2V-14B")
 
-        self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True)
+        self.generator = WanDiffusionWrapper(
+            **getattr(args, "model_kwargs", {}),
+            model_name=self.generator_name,
+            is_causal=self.is_causal
+        )
         self.generator.model.requires_grad_(True)
 
         self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, is_causal=False)
@@ -36,10 +42,10 @@ class BaseModel(nn.Module):
         self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name, is_causal=False)
         self.fake_score.model.requires_grad_(True)
 
-        self.text_encoder = WanTextEncoder()
+        self.text_encoder = WanTextEncoder(model_name=self.generator_name)
         self.text_encoder.requires_grad_(False)
 
-        self.vae = WanVAEWrapper()
+        self.vae = WanVAEWrapper(model_name=self.generator_name)
         self.vae.requires_grad_(False)
 
         self.scheduler = self.generator.get_scheduler()
@@ -209,14 +215,23 @@ class SelfForcingModel(BaseModel):
         Here we encapsulate the inference code with a model-dependent outside function.
         We pass our FSDP-wrapped modules into the pipeline to save memory.
         """
-        self.inference_pipeline = SelfForcingTrainingPipeline(
-            denoising_step_list=self.denoising_step_list,
-            scheduler=self.scheduler,
-            generator=self.generator,
-            num_frame_per_block=self.num_frame_per_block,
-            independent_first_frame=self.args.independent_first_frame,
-            same_step_across_blocks=self.args.same_step_across_blocks,
-            last_step_only=self.args.last_step_only,
-            num_max_frames=self.num_training_frames,
-            context_noise=self.args.context_noise
-        )
+        if self.is_causal:
+            self.inference_pipeline = SelfForcingTrainingPipeline(
+                model_name=self.generator_name,
+                denoising_step_list=self.denoising_step_list,
+                scheduler=self.scheduler,
+                generator=self.generator,
+                num_frame_per_block=self.num_frame_per_block,
+                independent_first_frame=self.args.independent_first_frame,
+                same_step_across_blocks=self.args.same_step_across_blocks,
+                last_step_only=self.args.last_step_only,
+                num_max_frames=self.num_training_frames,
+                context_noise=self.args.context_noise
+            )
+        else:
+            self.inference_pipeline = BidirectionalTrainingPipeline(
+                model_name=self.generator_name,
+                denoising_step_list=self.denoising_step_list,
+                scheduler=self.scheduler,
+                generator=self.generator,
+            )

@@ -7,6 +7,7 @@ import torch.distributed as dist
 
 class SelfForcingTrainingPipeline:
     def __init__(self,
+                 model_name: str,
                  denoising_step_list: List[int],
                  scheduler: SchedulerInterface,
                  generator: WanDiffusionWrapper,
@@ -18,6 +19,7 @@ class SelfForcingTrainingPipeline:
                  context_noise: int = 0,
                  **kwargs):
         super().__init__()
+        self.model_name = model_name
         self.scheduler = scheduler
         self.generator = generator
         self.denoising_step_list = denoising_step_list
@@ -25,7 +27,7 @@ class SelfForcingTrainingPipeline:
             self.denoising_step_list = self.denoising_step_list[:-1]  # remove the zero timestep for inference
 
         # Wan specific hyperparameters
-        self.num_transformer_blocks = 30
+        self.num_transformer_blocks = 40 if model_name == "Wan2.1-T2V-14B" else 30
         self.frame_seq_length = 1560
         self.num_frame_per_block = num_frame_per_block
         self.context_noise = context_noise
@@ -33,6 +35,8 @@ class SelfForcingTrainingPipeline:
 
         self.kv_cache1 = None
         self.kv_cache2 = None
+        self.crossattn_cache = None
+
         self.independent_first_frame = independent_first_frame
         self.same_step_across_blocks = same_step_across_blocks
         self.last_step_only = last_step_only
@@ -244,8 +248,8 @@ class SelfForcingTrainingPipeline:
 
         for _ in range(self.num_transformer_blocks):
             kv_cache1.append({
-                "k": torch.zeros([batch_size, self.kv_cache_size, 12, 128], dtype=dtype, device=device),
-                "v": torch.zeros([batch_size, self.kv_cache_size, 12, 128], dtype=dtype, device=device),
+                "k": torch.zeros([batch_size, self.kv_cache_size, self.num_transformer_blocks, 128], dtype=dtype, device=device),
+                "v": torch.zeros([batch_size, self.kv_cache_size, self.num_transformer_blocks, 128], dtype=dtype, device=device),
                 "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
                 "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
             })
@@ -260,8 +264,8 @@ class SelfForcingTrainingPipeline:
 
         for _ in range(self.num_transformer_blocks):
             crossattn_cache.append({
-                "k": torch.zeros([batch_size, 512, 12, 128], dtype=dtype, device=device),
-                "v": torch.zeros([batch_size, 512, 12, 128], dtype=dtype, device=device),
+                "k": torch.zeros([batch_size, 512, self.num_transformer_blocks, 128], dtype=dtype, device=device),
+                "v": torch.zeros([batch_size, 512, self.num_transformer_blocks, 128], dtype=dtype, device=device),
                 "is_init": False
             })
         self.crossattn_cache = crossattn_cache

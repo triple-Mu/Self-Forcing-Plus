@@ -2,7 +2,7 @@ import gc
 import logging
 
 from utils.dataset import ShardingLMDBDataset, cycle
-from utils.dataset import TextDataset
+from utils.dataset import TextDataset, TextFolderDataset
 from utils.distributed import EMA_FSDP, fsdp_wrap, fsdp_state_dict, launch_distributed_job
 from utils.misc import (
     set_seed,
@@ -123,7 +123,13 @@ class Trainer:
         if self.config.i2v:
             dataset = ShardingLMDBDataset(config.data_path, max_pair=int(1e8))
         else:
-            dataset = TextDataset(config.data_path)
+            if self.config.data_type == "text_folder":
+                dataset = TextFolderDataset(config.data_path)
+            elif self.config.data_type == "text_file":
+                dataset = TextDataset(config.data_path)
+            else:
+                raise ValueError("Invalid data type")
+            
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset, shuffle=True, drop_last=True)
         dataloader = torch.utils.data.DataLoader(
@@ -250,6 +256,8 @@ class Trainer:
                 initial_latent=image_latent if self.config.i2v else None
             )
 
+            torch.cuda.empty_cache()
+
             generator_loss.backward()
             generator_grad_norm = self.model.generator.clip_grad_norm_(
                 self.max_grad_norm_generator)
@@ -313,6 +321,8 @@ class Trainer:
         start_step = self.step
 
         while True:
+            if self.is_main_process:
+                print(f"training step {self.step} ...")
             TRAIN_GENERATOR = self.step % self.config.dfake_gen_update_ratio == 0
 
             # Train the generator
