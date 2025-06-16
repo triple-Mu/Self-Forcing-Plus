@@ -25,7 +25,19 @@ Self Forcing trains autoregressive video diffusion models by **simulating the in
 ---
 
 
-https://github.com/user-attachments/assets/7548c2db-fe03-4ba8-8dd3-52d2c6160739
+<table>
+  <tr>
+    <td align="center">
+      <video src="https://github.com/GoatWu/Self-Forcing-Plus/blob/main/demos/output_lightx2v_wan_t2v_t06.mp4" width="100%"></video>
+    </td>
+    <td align="center">
+      <video src="https://github.com/GoatWu/Self-Forcing-Plus/blob/main/demos/output_lightx2v_wan_t2v_t01.mp4" width="100%"></video>
+    </td>
+    <td align="center">
+      <video src="https://github.com/GoatWu/Self-Forcing-Plus/blob/main/demos/output_lightx2v_wan_t2v_t03.mp4" width="100%"></video>
+    </td>
+  </tr>
+</table>
 
 
 ## Requirements
