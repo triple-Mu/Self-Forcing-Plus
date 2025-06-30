@@ -1,52 +1,14 @@
 <p align="center">
 <h1 align="center">Self Forcing</h1>
-<h3 align="center">Bridging the Train-Test Gap in Autoregressive Video Diffusion</h3>
-</p>
-<p align="center">
-  <p align="center">
-    <a href="https://www.xunhuang.me/">Xun Huang</a><sup>1</sup>
-    ·
-    <a href="https://zhengqili.github.io/">Zhengqi Li</a><sup>1</sup>
-    ·
-    <a href="https://guandehe.github.io/">Guande He</a><sup>2</sup>
-    ·
-    <a href="https://mingyuanzhou.github.io/">Mingyuan Zhou</a><sup>2</sup>
-    ·
-    <a href="https://research.adobe.com/person/eli-shechtman/">Eli Shechtman</a><sup>1</sup><br>
-    <sup>1</sup>Adobe Research <sup>2</sup>UT Austin
-  </p>
-  <h3 align="center"><a href="https://arxiv.org/abs/2506.08009">Paper</a> | <a href="https://self-forcing.github.io">Website</a> | <a href="https://huggingface.co/gdhe17/Self-Forcing/tree/main">Models (HuggingFace)</a></h3>
-</p>
-
----
 
 Self Forcing trains autoregressive video diffusion models by **simulating the inference process during training**, performing autoregressive rollout with KV caching. It resolves the train-test distribution mismatch and enables **real-time, streaming video generation on a single RTX 4090** while matching the quality of state-of-the-art diffusion models.
 
----
+Self-Forcing-Plus focuses on step distillation and CFG distillation for bidirectional models. Building upon Self-Forcing, we support 4-step T2V-14B model training and higher quality 4-step I2V-14B model training.
 
-
-<table>
-  <tr>
-    <td align="center">
-      <video src="https://github.com/GoatWu/Self-Forcing-Plus/blob/main/demos/output_lightx2v_wan_t2v_t06.mp4" width="100%"></video>
-    </td>
-    <td align="center">
-      <video src="https://github.com/GoatWu/Self-Forcing-Plus/blob/main/demos/output_lightx2v_wan_t2v_t01.mp4" width="100%"></video>
-    </td>
-    <td align="center">
-      <video src="https://github.com/GoatWu/Self-Forcing-Plus/blob/main/demos/output_lightx2v_wan_t2v_t03.mp4" width="100%"></video>
-    </td>
-  </tr>
-</table>
-
-
-## Requirements
-We tested this repo on the following setup:
-* Nvidia GPU with at least 24 GB memory (RTX 4090, A100, and H100 are tested).
-* Linux operating system.
-* 64 GB RAM.
-
-Other hardware setup could also work but hasn't been tested.
+| Model Type | Model Link |
+|------------|---------------|
+| T2V-14B | [Huggingface](https://huggingface.co/lightx2v/Wan2.1-T2V-14B-StepDistill-CfgDistill) |
+| I2V-14B-480P | Coming Soon |
 
 ## Installation
 Create a conda environment and install dependencies:
