@@ -47,7 +47,8 @@ class QuickGELU(nn.Module):
 class LayerNorm(nn.LayerNorm):
 
     def forward(self, x):
-        return super().forward(x.float()).type_as(x)
+        # return super().forward(x.float()).type_as(x)
+        return super().forward(x.to(self.weight.dtype))
 
 
 class SelfAttention(nn.Module):
@@ -403,33 +404,6 @@ class XLMRobertaCLIP(nn.Module):
             dropout=text_dropout)
         self.log_scale = nn.Parameter(math.log(1 / 0.07) * torch.ones([]))
 
-    def forward(self, imgs, txt_ids):
-        """
-        imgs:       [B, 3, H, W] of torch.float32.
-        - mean:     [0.48145466, 0.4578275, 0.40821073]
-        - std:      [0.26862954, 0.26130258, 0.27577711]
-        txt_ids:    [B, L] of torch.long.
-                    Encoded by data.CLIPTokenizer.
-        """
-        xi = self.visual(imgs)
-        xt = self.textual(txt_ids)
-        return xi, xt
-
-    def param_groups(self):
-        groups = [{
-            'params': [
-                p for n, p in self.named_parameters()
-                if 'norm' in n or n.endswith('bias')
-            ],
-            'weight_decay': 0.0
-        }, {
-            'params': [
-                p for n, p in self.named_parameters()
-                if not ('norm' in n or n.endswith('bias'))
-            ]
-        }]
-        return groups
-
 
 def _clip(pretrained=False,
           pretrained_name=None,
@@ -498,13 +472,14 @@ def clip_xlm_roberta_vit_h_14(
     return _clip(pretrained, pretrained_name, XLMRobertaCLIP, **cfg)
 
 
-class CLIPModel:
+class CLIPModel(nn.Module):
 
-    def __init__(self, dtype, device, checkpoint_path, tokenizer_path):
+    def __init__(self, dtype, device, checkpoint_path):
+        super().__init__()
         self.dtype = dtype
         self.device = device
         self.checkpoint_path = checkpoint_path
-        self.tokenizer_path = tokenizer_path
+        # self.tokenizer_path = tokenizer_path
 
         # init model
         self.model, self.transforms = clip_xlm_roberta_vit_h_14(
@@ -518,11 +493,7 @@ class CLIPModel:
         self.model.load_state_dict(
             torch.load(checkpoint_path, map_location='cpu'))
 
-        # init tokenizer
-        self.tokenizer = HuggingfaceTokenizer(
-            name=tokenizer_path,
-            seq_len=self.model.max_text_len - 2,
-            clean='whitespace')
+        del self.model.log_scale, self.model.textual
 
     def visual(self, videos):
         # preprocess
@@ -537,6 +508,6 @@ class CLIPModel:
         videos = self.transforms.transforms[-1](videos.mul_(0.5).add_(0.5))
 
         # forward
-        with torch.cuda.amp.autocast(dtype=self.dtype):
-            out = self.model.visual(videos, use_31_block=True)
-            return out
+        out = self.model.visual(videos, use_31_block=True)
+        out = out.unsqueeze(0)
+        return out

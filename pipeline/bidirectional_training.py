@@ -39,7 +39,7 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
         dist.broadcast(indices, src=0)  # Broadcast the random indices to all ranks
         return indices.tolist()
 
-    def inference_with_trajectory(self, noise: torch.Tensor, **conditional_dict) -> torch.Tensor:
+    def inference_with_trajectory(self, noise: torch.Tensor, clip_fea, y, **conditional_dict) -> torch.Tensor:
         """
         Perform inference on the given noise and text prompts.
         Inputs:
@@ -68,7 +68,9 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
                     _, denoised_pred = self.generator(
                         noisy_image_or_video=noisy_image_or_video,
                         conditional_dict=conditional_dict,
-                        timestep=timestep
+                        timestep=timestep,
+                        clip_fea=clip_fea,
+                        y=y
                     )  # [B, F, C, H, W]
 
                     next_timestep = self.denoising_step_list[index + 1] * torch.ones(
@@ -83,7 +85,9 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
                 _, denoised_pred = self.generator(
                     noisy_image_or_video=noisy_image_or_video,
                     conditional_dict=conditional_dict,
-                    timestep=timestep
+                    timestep=timestep,
+                    clip_fea=clip_fea,
+                    y=y
                 )  # [B, F, C, H, W]
                 break
 

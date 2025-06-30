@@ -1,3 +1,4 @@
+import os
 import types
 from typing import List, Optional
 import torch
@@ -8,6 +9,7 @@ from wan.modules.tokenizers import HuggingfaceTokenizer
 from wan.modules.model import WanModel, RegisterTokens, GanAttentionBlock
 from wan.modules.vae import _video_vae
 from wan.modules.t5 import umt5_xxl
+from wan.modules.clip import CLIPModel
 from wan.modules.causal_model import CausalWanModel
 
 
@@ -51,6 +53,31 @@ class WanTextEncoder(torch.nn.Module):
         }
 
 
+class WanCLIPEncoder(torch.nn.Module):
+    def __init__(self, model_name="Wan2.1-T2V-14B"):
+        super().__init__()
+        self.model_name = model_name
+        self.image_encoder = CLIPModel(
+            dtype=torch.float16,
+            device=torch.device('cpu'),
+            checkpoint_path=os.path.join(
+                f"wan_models/{self.model_name}/",
+                "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+            )
+        )
+
+    @property
+    def device(self):
+        # Assume we are always on GPU
+        return torch.cuda.current_device()
+
+    def forward(self, img):
+        # img = TF.to_tensor(img).sub_(0.5).div_(0.5).cuda()
+        img = img[:, None, :, :].to(self.device)
+        clip_encoder_out = self.image_encoder.visual([img]).squeeze(0)
+        return clip_encoder_out
+
+
 class WanVAEWrapper(torch.nn.Module):
     def __init__(self, model_name="Wan2.1-T2V-14B"):
         super().__init__()
@@ -71,6 +98,53 @@ class WanVAEWrapper(torch.nn.Module):
             pretrained_path=f"wan_models/{self.model_name}/Wan2.1_VAE.pth",
             z_dim=16,
         ).eval().requires_grad_(False)
+
+        self.dtype = torch.bfloat16
+
+        self.vae_stride = (4, 8, 8)
+        self.target_video_length = 81
+
+    def encode(self, pixel):
+        device, dtype = pixel[0].device, self.dtype
+        scale = [self.mean.to(device=device, dtype=dtype),
+                 1.0 / self.std.to(device=device, dtype=dtype)]
+        output = [
+            self.model.encode(u.to(self.dtype).unsqueeze(0), scale).float().squeeze(0)
+            for u in pixel
+        ]
+        return output
+
+    def run_vae_encoder(self, img):
+        # img = TF.to_tensor(img).sub_(0.5).div_(0.5).cuda()
+        img = img.to(torch.bfloat16).cuda()
+        h, w = img.shape[1:]
+        lat_h = h // self.vae_stride[1]
+        lat_w = w // self.vae_stride[2]
+
+        msk = torch.ones(
+            1,
+            self.target_video_length,
+            lat_h,
+            lat_w,
+            device=torch.device("cuda"),
+        )
+        msk[:, 1:] = 0
+        msk = torch.concat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
+        msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w)
+        msk = msk.transpose(1, 2)[0]
+        vae_encode_out = self.encode(
+            [
+                torch.concat(
+                    [
+                        torch.nn.functional.interpolate(img[None].cpu(), size=(h, w), mode="bicubic").transpose(0, 1),
+                        torch.zeros(3, self.target_video_length - 1, h, w),
+                    ],
+                    dim=1,
+                ).cuda()
+            ],
+        )[0]
+        vae_encode_out = torch.concat([msk, vae_encode_out]).to(torch.bfloat16)
+        return [vae_encode_out]
 
     def encode_to_latent(self, pixel: torch.Tensor) -> torch.Tensor:
         # pixel: [batch_size, num_channels, num_frames, height, width]
@@ -125,7 +199,7 @@ class WanDiffusionWrapper(torch.nn.Module):
     ):
         super().__init__()
         self.model_name = model_name
-        self.dim = 5120 if model_name == "Wan2.1-T2V-14B" else 1536
+        self.dim = 5120 if "14B" in model_name else 1536
 
         if is_causal:
             self.model = CausalWanModel.from_pretrained(
@@ -230,7 +304,9 @@ class WanDiffusionWrapper(torch.nn.Module):
         concat_time_embeddings: Optional[bool] = False,
         clean_x: Optional[torch.Tensor] = None,
         aug_t: Optional[torch.Tensor] = None,
-        cache_start: Optional[int] = None
+        cache_start: Optional[int] = None,
+        clip_fea: Optional[torch.Tensor] = None,
+        y: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         prompt_embeds = conditional_dict["prompt_embeds"]
 
@@ -250,7 +326,9 @@ class WanDiffusionWrapper(torch.nn.Module):
                 kv_cache=kv_cache,
                 crossattn_cache=crossattn_cache,
                 current_start=current_start,
-                cache_start=cache_start
+                cache_start=cache_start,
+                clip_fea=clip_fea,
+                y=y
             ).permute(0, 2, 1, 3, 4)
         else:
             if clean_x is not None:
@@ -261,6 +339,8 @@ class WanDiffusionWrapper(torch.nn.Module):
                     seq_len=self.seq_len,
                     clean_x=clean_x.permute(0, 2, 1, 3, 4),
                     aug_t=aug_t,
+                    clip_fea=clip_fea,
+                    y=y
                 ).permute(0, 2, 1, 3, 4)
             else:
                 if classify_mode:
@@ -272,14 +352,18 @@ class WanDiffusionWrapper(torch.nn.Module):
                         register_tokens=self._register_tokens,
                         cls_pred_branch=self._cls_pred_branch,
                         gan_ca_blocks=self._gan_ca_blocks,
-                        concat_time_embeddings=concat_time_embeddings
+                        concat_time_embeddings=concat_time_embeddings,
+                        clip_fea=clip_fea,
+                        y=y
                     )
                     flow_pred = flow_pred.permute(0, 2, 1, 3, 4)
                 else:
                     flow_pred = self.model(
                         noisy_image_or_video.permute(0, 2, 1, 3, 4),
                         t=input_timestep, context=prompt_embeds,
-                        seq_len=self.seq_len
+                        seq_len=self.seq_len,
+                        clip_fea=clip_fea,
+                        y=y
                     ).permute(0, 2, 1, 3, 4)
 
         pred_x0 = self._convert_flow_pred_to_x0(

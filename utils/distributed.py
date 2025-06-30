@@ -20,7 +20,7 @@ def fsdp_state_dict(model):
     return checkpoint
 
 
-def fsdp_wrap(module, sharding_strategy="full", mixed_precision=False, wrap_strategy="size", min_num_params=int(5e7), transformer_module=None, cpu_offload=False):
+def fsdp_wrap(module, sharding_strategy="full", mixed_precision=False, wrap_strategy="size", min_num_params=int(5e7), transformer_module=None, ignored_modules=None, cpu_offload=False):
     if mixed_precision:
         mixed_precision_policy = MixedPrecision(
             param_dtype=torch.bfloat16,
@@ -61,6 +61,7 @@ def fsdp_wrap(module, sharding_strategy="full", mixed_precision=False, wrap_stra
         device_id=torch.cuda.current_device(),
         limit_all_gathers=True,
         use_orig_params=True,
+        ignored_modules=ignored_modules,
         cpu_offload=CPUOffload(offload_params=cpu_offload),
         sync_module_states=False  # Load ckpt on rank 0 and sync to other ranks
     )

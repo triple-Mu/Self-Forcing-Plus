@@ -27,7 +27,7 @@ class SelfForcingTrainingPipeline:
             self.denoising_step_list = self.denoising_step_list[:-1]  # remove the zero timestep for inference
 
         # Wan specific hyperparameters
-        self.num_transformer_blocks = 40 if model_name == "Wan2.1-T2V-14B" else 30
+        self.num_transformer_blocks = 40 if "14B" in model_name else 30
         self.frame_seq_length = 1560
         self.num_frame_per_block = num_frame_per_block
         self.context_noise = context_noise
@@ -64,6 +64,8 @@ class SelfForcingTrainingPipeline:
     def inference_with_trajectory(
             self,
             noise: torch.Tensor,
+            clip_fea: Optional[torch.Tensor] = None,
+            y: Optional[torch.Tensor] = None,
             initial_latent: Optional[torch.Tensor] = None,
             return_sim_step: bool = False,
             **conditional_dict

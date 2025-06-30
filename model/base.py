@@ -6,13 +6,14 @@ import torch
 
 from pipeline import SelfForcingTrainingPipeline, BidirectionalTrainingPipeline
 from utils.loss import get_denoising_loss
-from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper
+from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper, WanCLIPEncoder
 
 
 class BaseModel(nn.Module):
     def __init__(self, args, device):
         super().__init__()
         self.is_causal = args.generator_type == "causal"
+        self.i2v = args.i2v
         self._initialize_models(args, device)
 
         self.device = device
@@ -47,6 +48,10 @@ class BaseModel(nn.Module):
 
         self.vae = WanVAEWrapper(model_name=self.generator_name)
         self.vae.requires_grad_(False)
+
+        if self.i2v:
+            self.image_encoder = WanCLIPEncoder(model_name=self.generator_name)
+            self.image_encoder.requires_grad_(False)
 
         self.scheduler = self.generator.get_scheduler()
         self.scheduler.timesteps = self.scheduler.timesteps.to(device)
@@ -110,7 +115,9 @@ class SelfForcingModel(BaseModel):
         self,
         image_or_video_shape,
         conditional_dict: dict,
-        initial_latent: torch.tensor = None
+        initial_latent: torch.tensor = None,
+        clip_fea: torch.Tensor = None,
+        y: torch.Tensor = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Optionally simulate the generator's input from noise using backward simulation
@@ -155,7 +162,9 @@ class SelfForcingModel(BaseModel):
         pred_image_or_video, denoised_timestep_from, denoised_timestep_to = self._consistency_backward_simulation(
             noise=torch.randn(noise_shape,
                               device=self.device, dtype=self.dtype),
-            **conditional_dict,
+            clip_fea=clip_fea,
+            y=y,
+            **conditional_dict
         )
         # Slice last 21 frames
         if pred_image_or_video.shape[1] > 21:
@@ -188,6 +197,8 @@ class SelfForcingModel(BaseModel):
     def _consistency_backward_simulation(
         self,
         noise: torch.Tensor,
+        clip_fea: torch.Tensor,
+        y: torch.Tensor,
         **conditional_dict: dict
     ) -> torch.Tensor:
         """
@@ -206,7 +217,7 @@ class SelfForcingModel(BaseModel):
             self._initialize_inference_pipeline()
 
         return self.inference_pipeline.inference_with_trajectory(
-            noise=noise, **conditional_dict
+            noise=noise, clip_fea=clip_fea, y=y, **conditional_dict
         )
 
     def _initialize_inference_pipeline(self):

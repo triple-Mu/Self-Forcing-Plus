@@ -677,7 +677,7 @@ class WanModel(ModelMixin, ConfigMixin):
             self.freqs = self.freqs.to(device)
 
         if y is not None:
-            x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
+            x = [torch.cat([u.squeeze(0), v], dim=0) for u, v in zip(x, y)]
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]

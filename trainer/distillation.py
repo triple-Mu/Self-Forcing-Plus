@@ -99,7 +99,19 @@ class Trainer:
             cpu_offload=getattr(config, "text_encoder_cpu_offload", False)
         )
 
-        if not config.no_visualize or config.load_raw_video:
+        if self.config.i2v:
+            self.model.image_encoder = fsdp_wrap(
+                self.model.image_encoder,
+                sharding_strategy=config.sharding_strategy,
+                mixed_precision=config.mixed_precision,
+                wrap_strategy=config.image_encoder_fsdp_wrap_strategy,
+                min_num_params=int(5e6),
+                cpu_offload=getattr(config, "image_encoder_cpu_offload", False)
+            )
+            self.model.vae = self.model.vae.to(
+                device=self.device, dtype=torch.bfloat16)
+
+        elif not config.no_visualize or config.load_raw_video:
             self.model.vae = self.model.vae.to(
                 device=self.device, dtype=torch.bfloat16 if config.mixed_precision else torch.float32)
 
@@ -156,11 +168,12 @@ class Trainer:
 
             renamed_n = rename_param(n)
             self.name_to_trainable_params[renamed_n] = p
-        ema_weight = config.ema_weight
+        self.ema_weight = config.get("ema_weight", -1.0)
+        self.ema_start_step = config.get("ema_start_step", 0)
         self.generator_ema = None
-        if (ema_weight is not None) and (ema_weight > 0.0):
-            print(f"Setting up EMA with weight {ema_weight}")
-            self.generator_ema = EMA_FSDP(self.model.generator, decay=ema_weight)
+        if (self.ema_weight > 0.0) and (self.step >= self.ema_start_step):
+            print(f"Setting up EMA with weight {self.ema_weight}")
+            self.generator_ema = EMA_FSDP(self.model.generator, decay=self.ema_weight)
 
         ##############################################################################################################
         # 7. (If resuming) Load the model and optimizer, lr_scheduler, ema's statedicts
@@ -178,8 +191,8 @@ class Trainer:
         ##############################################################################################################
 
         # Let's delete EMA params for early steps to save some computes at training and inference
-        if self.step < config.ema_start_step:
-            self.generator_ema = None
+        # if self.step < config.ema_start_step:
+        #     self.generator_ema = None
 
         self.max_grad_norm_generator = getattr(config, "max_grad_norm_generator", 10.0)
         self.max_grad_norm_critic = getattr(config, "max_grad_norm_critic", 10.0)
@@ -192,7 +205,7 @@ class Trainer:
         critic_state_dict = fsdp_state_dict(
             self.model.fake_score)
 
-        if self.config.ema_start_step < self.step:
+        if (self.ema_weight > 0.0) and (self.ema_start_step < self.step):
             state_dict = {
                 "generator": generator_state_dict,
                 "critic": critic_state_dict,
@@ -246,6 +259,14 @@ class Trainer:
             else:
                 unconditional_dict = self.unconditional_dict
 
+            if self.config.i2v:
+                img = batch["img"].to(self.device).squeeze(0)
+                clip_fea = self.model.image_encoder(img)
+                y = self.model.vae.run_vae_encoder(img)
+            else:
+                clip_fea = None
+                y = None
+
         # Step 3: Store gradients for the generator (if training the generator)
         if train_generator:
             generator_loss, generator_log_dict = self.model.generator_loss(
@@ -253,7 +274,9 @@ class Trainer:
                 conditional_dict=conditional_dict,
                 unconditional_dict=unconditional_dict,
                 clean_latent=clean_latent,
-                initial_latent=image_latent if self.config.i2v else None
+                initial_latent=image_latent if self.config.i2v else None,
+                clip_fea=clip_fea,
+                y=y
             )
 
             torch.cuda.empty_cache()
@@ -275,7 +298,9 @@ class Trainer:
             conditional_dict=conditional_dict,
             unconditional_dict=unconditional_dict,
             clean_latent=clean_latent,
-            initial_latent=image_latent if self.config.i2v else None
+            initial_latent=image_latent if self.config.i2v else None,
+            clip_fea=clip_fea,
+            y=y
         )
 
         critic_loss.backward()
@@ -350,9 +375,9 @@ class Trainer:
             self.step += 1
 
             # Create EMA params (if not already created)
-            if (self.step >= self.config.ema_start_step) and \
-                    (self.generator_ema is None) and (self.config.ema_weight > 0):
-                self.generator_ema = EMA_FSDP(self.model.generator, decay=self.config.ema_weight)
+            if (self.step >= self.ema_start_step) and \
+                    (self.generator_ema is None) and (self.ema_weight > 0):
+                self.generator_ema = EMA_FSDP(self.model.generator, decay=self.ema_weight)
 
             # Save the model
             if (not self.config.no_save) and (self.step - start_step) > 0 and self.step % self.config.log_iters == 0:

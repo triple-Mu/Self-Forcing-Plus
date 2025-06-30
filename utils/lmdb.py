@@ -43,6 +43,7 @@ def process_data_dict(data_dict, seen_prompts):
         all_prompts.append(prompt)
 
     if len(all_videos) == 0:
+        print("no video found!")
         return {"latents": np.array([]), "prompts": np.array([])}
 
     all_videos = np.concatenate(all_videos, axis=0)

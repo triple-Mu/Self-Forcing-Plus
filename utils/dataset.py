@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from PIL import Image
 import os
+import torchvision.transforms.functional as TF
 
 
 class TextDataset(Dataset):
@@ -40,9 +41,12 @@ class TextFolderDataset(Dataset):
         num = 0
         for file in os.listdir(data_path):
             if file.endswith(".txt"):
-                num += 1
                 with open(os.path.join(data_path, file), "r") as f:
-                    self.texts.append(f.read().strip())
+                    text = f.read().strip()
+                    if len(text) < 300:
+                        continue
+                    self.texts.append(text)
+                num += 1
                 if num >= 50000:
                     break
 
@@ -137,9 +141,18 @@ class ShardingLMDBDataset(Dataset):
             "prompts", str, local_idx
         )
 
+        img = retrieve_row_from_lmdb(
+            self.envs[shard_id],
+            "img", np.uint8, local_idx,
+            shape=(480, 832, 3)
+        )
+        img = Image.fromarray(img)
+        img = TF.to_tensor(img).sub_(0.5).div_(0.5)
+
         return {
             "prompts": prompts,
-            "ode_latent": torch.tensor(latents, dtype=torch.float32)
+            "ode_latent": torch.tensor(latents, dtype=torch.float32),
+            "img": img
         }
 
 
