@@ -1,6 +1,7 @@
 import torch
 import argparse
 import os
+from safetensors.torch import save_file
 
 def main():
     # Set up argument parser
@@ -69,8 +70,18 @@ def main():
     
     # Save the new checkpoint
     print(f"Saving generator to {output_path}...")
-    torch.save(new_generator, output_path)
-    print(f"Successfully saved generator to {output_path}")
+    
+    # Choose save method based on file extension
+    if output_path.endswith('.safetensors'):
+        save_file(new_generator, output_path)
+        print(f"Successfully saved generator to {output_path} (safetensors format)")
+    elif output_path.endswith('.pt') or output_path.endswith('.pth'):
+        torch.save(new_generator, output_path)
+        print(f"Successfully saved generator to {output_path} (PyTorch format)")
+    else:
+        # Default to PyTorch format
+        torch.save(new_generator, output_path)
+        print(f"Successfully saved generator to {output_path} (PyTorch format - default)")
 
 if __name__ == "__main__":
     main()
