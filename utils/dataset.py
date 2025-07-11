@@ -42,8 +42,6 @@ class TextFolderDataset(Dataset):
             if file.endswith(".txt"):
                 with open(os.path.join(data_path, file), "r") as f:
                     text = f.read().strip()
-                    if len(text) < 300:
-                        continue
                     self.texts.append(text)
 
     def __len__(self):
