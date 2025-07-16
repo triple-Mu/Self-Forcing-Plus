@@ -6,7 +6,7 @@ Self-Forcing-Plus focuses on step distillation and CFG distillation for bidirect
 | Model Type | Model Link |
 |------------|---------------|
 | T2V-14B | [Huggingface](https://huggingface.co/lightx2v/Wan2.1-T2V-14B-StepDistill-CfgDistill) |
-| I2V-14B-480P | Coming Soon |
+| I2V-14B-480P | [Huggingface](https://huggingface.co/lightx2v/Wan2.1-I2V-14B-480P-StepDistill-CfgDistill-Lightx2v) |
 
 ## Installation
 Create a conda environment and install dependencies:

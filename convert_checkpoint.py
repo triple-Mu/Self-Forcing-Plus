@@ -1,6 +1,7 @@
 import torch
 import argparse
 import os
+import gc
 from safetensors.torch import save_file
 
 def main():
@@ -67,6 +68,9 @@ def main():
     print(f"Removed prefix '{prefix_to_remove}' from {prefix_count} keys")
     if convert_to_bf16:
         print(f"Converted {tensor_count} tensors to bfloat16")
+
+    del checkpoint
+    gc.collect()
     
     # Save the new checkpoint
     print(f"Saving generator to {output_path}...")

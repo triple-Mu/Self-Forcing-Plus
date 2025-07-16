@@ -98,7 +98,7 @@ class EMA_FSDP:
     @torch.no_grad()
     def _init_shadow(self, fsdp_module):
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        with FSDP.summon_full_params(fsdp_module, writeback=False):
+        with FSDP.summon_full_params(fsdp_module, writeback=False, offload_to_cpu=True):
             for n, p in fsdp_module.module.named_parameters():
                 self.shadow[n] = p.detach().clone().float().cpu()
 
