@@ -136,7 +136,8 @@ class Trainer:
             dataset = ShardingLMDBDataset(config.data_path, max_pair=int(1e8))
         else:
             if self.config.data_type == "text_folder":
-                dataset = TextFolderDataset(config.data_path)
+                data_max_count = config.get("data_max_count", 30000)
+                dataset = TextFolderDataset(config.data_path, data_max_count)
             elif self.config.data_type == "text_file":
                 dataset = TextDataset(config.data_path)
             else:

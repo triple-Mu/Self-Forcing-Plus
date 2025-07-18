@@ -36,13 +36,17 @@ class TextDataset(Dataset):
 
 
 class TextFolderDataset(Dataset):
-    def __init__(self, data_path):
+    def __init__(self, data_path, max_count=30000):
         self.texts = []
+        count = 1
         for file in os.listdir(data_path):
             if file.endswith(".txt"):
                 with open(os.path.join(data_path, file), "r") as f:
                     text = f.read().strip()
                     self.texts.append(text)
+                    count += 1
+                    if count > max_count:
+                        break
 
     def __len__(self):
         return len(self.texts)

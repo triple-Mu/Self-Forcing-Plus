@@ -18,7 +18,7 @@ warp_denoising_step: true # need to remove - 0 in denoising_step_list if warp_de
 ts_schedule: false
 num_train_timestep: 1000
 timestep_shift: 5.0
-guidance_scale: 5.0
+guidance_scale: 4.0
 denoising_loss_type: flow
 mixed_precision: true
 seed: 0
@@ -34,7 +34,8 @@ beta2: 0.999
 beta1_critic: 0.0
 beta2_critic: 0.999
 data_type: text_folder
-data_path: prompts/accvideo/
+data_path: prompts/good_prompts/
+data_max_count: 30000
 batch_size: 1
 ema_weight: 0.99
 ema_start_step: 200
