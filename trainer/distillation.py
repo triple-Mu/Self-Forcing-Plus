@@ -178,16 +178,50 @@ class Trainer:
 
         ##############################################################################################################
         # 7. (If resuming) Load the model and optimizer, lr_scheduler, ema's statedicts
-        if getattr(config, "generator_ckpt", False):
-            print(f"Loading pretrained generator from {config.generator_ckpt}")
-            state_dict = torch.load(config.generator_ckpt, map_location="cpu")
-            if "generator" in state_dict:
-                state_dict = state_dict["generator"]
-            elif "model" in state_dict:
-                state_dict = state_dict["model"]
-            self.model.generator.load_state_dict(
-                state_dict, strict=True
-            )
+        if getattr(config, "resume_ckpt", False):
+            print(f"Resuming training from {config.resume_ckpt}")
+            
+            # Set resume step
+            if getattr(config, "resume_step", False):
+                self.step = config.resume_step
+                print(f"Resuming from step {self.step}")
+
+            # Load generator_ema checkpoint (if exists)
+            generator_ema_path = os.path.join(config.resume_ckpt, "generator_ema.pt")
+            if os.path.exists(generator_ema_path):
+                # Initialize EMA if not already initialized (needed for loading state)
+                if self.generator_ema is None and self.ema_weight > 0.0:
+                    print("Initializing EMA for resume...")
+                    generator_state_dict = torch.load(generator_ema_path, map_location="cpu")
+                    # FSDP will automatically handle dtype conversion
+                    self.model.generator.load_state_dict(generator_state_dict, strict=True)
+                    self.generator_ema = EMA_FSDP(self.model.generator, decay=self.ema_weight)
+                    print("Generator EMA checkpoint loaded successfully")
+            else:
+                print(f"Info: Generator EMA checkpoint not found at {generator_ema_path}")
+            
+            # Load generator checkpoint
+            generator_path = os.path.join(config.resume_ckpt, "generator.pt")
+            if os.path.exists(generator_path):
+                print(f"Loading generator from {generator_path}")
+                generator_state_dict = torch.load(generator_path, map_location="cpu")
+                # FSDP will automatically handle dtype conversion
+                self.model.generator.load_state_dict(generator_state_dict, strict=True)
+                print("Generator checkpoint loaded successfully")
+            else:
+                print(f"Warning: Generator checkpoint not found at {generator_path}")
+            
+            # Load critic checkpoint
+            critic_path = os.path.join(config.resume_ckpt, "critic.pt")
+            if os.path.exists(critic_path):
+                print(f"Loading critic from {critic_path}")
+                critic_state_dict = torch.load(critic_path, map_location="cpu")
+                # FSDP will automatically handle dtype conversion
+                self.model.fake_score.load_state_dict(critic_state_dict, strict=True)
+                print("Critic checkpoint loaded successfully")
+            else:
+                print(f"Warning: Critic checkpoint not found at {critic_path}")
+        
 
         ##############################################################################################################
 

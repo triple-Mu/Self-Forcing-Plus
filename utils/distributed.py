@@ -98,7 +98,7 @@ class EMA_FSDP:
     @torch.no_grad()
     def _init_shadow(self, fsdp_module):
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        with FSDP.summon_full_params(fsdp_module, writeback=False, offload_to_cpu=True):
+        with FSDP.summon_full_params(fsdp_module, writeback=False, offload_to_cpu=True, rank0_only=True):
             for n, p in fsdp_module.module.named_parameters():
                 self.shadow[n] = p.detach().clone().float().cpu()
 
@@ -106,7 +106,7 @@ class EMA_FSDP:
     def update(self, fsdp_module):
         d = self.decay
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        with FSDP.summon_full_params(fsdp_module, writeback=False, offload_to_cpu=True):
+        with FSDP.summon_full_params(fsdp_module, writeback=False, offload_to_cpu=True, rank0_only=True):
             for n, p in fsdp_module.module.named_parameters():
                 self.shadow[n].mul_(d).add_(p.detach().float().cpu(), alpha=1. - d)
 
@@ -120,7 +120,7 @@ class EMA_FSDP:
     def copy_to(self, fsdp_module):
         # load EMA weights into an (unwrapped) copy of the generator
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        with FSDP.summon_full_params(fsdp_module, writeback=True, offload_to_cpu=True):
+        with FSDP.summon_full_params(fsdp_module, writeback=True):
             for n, p in fsdp_module.module.named_parameters():
                 if n in self.shadow:
                     p.data.copy_(self.shadow[n].to(p.dtype, device=p.device))
