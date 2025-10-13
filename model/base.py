@@ -1,12 +1,13 @@
-from typing import Tuple
+from typing import Tuple, List
 from einops import rearrange
 from torch import nn
 import torch.distributed as dist
 import torch
 
-from pipeline import SelfForcingTrainingPipeline, BidirectionalTrainingPipeline
+from pipeline import SelfForcingTrainingPipeline, BidirectionalTrainingPipeline, BidirectionalTrainingT2IPipeline
 from utils.loss import get_denoising_loss
 from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper, WanCLIPEncoder
+from utils.qwenimage_wrapper import QwenImageTextEncoder, QwenImageWrapper
 
 
 class BaseModel(nn.Module):
@@ -246,3 +247,137 @@ class SelfForcingModel(BaseModel):
                 scheduler=self.scheduler,
                 generator=self.generator,
             )
+
+
+class T2IBaseModel(nn.Module):
+    def __init__(self, args, device):
+        super().__init__()
+        self._initialize_models(args, device)
+
+        self.device = device
+        self.args = args
+        self.dtype = torch.bfloat16 if args.mixed_precision else torch.float32
+        if hasattr(args, "denoising_step_list"):
+            self.denoising_step_list = torch.tensor(args.denoising_step_list, dtype=torch.long)
+            if args.warp_denoising_step:
+                timesteps = torch.cat((self.scheduler.timesteps.cpu(), torch.tensor([0], dtype=torch.float32)))
+                self.denoising_step_list = timesteps[1000 - self.denoising_step_list]
+
+    def _initialize_models(self, args, device):
+        self.real_model_name = getattr(args, "real_name", "Qwen-Image")
+        self.fake_model_name = getattr(args, "fake_name", "Qwen-Image")
+        self.generator_name = getattr(args, "generator_name", "Qwen-Image")
+
+        self.generator = QwenImageWrapper(
+            model_name=self.generator_name,
+            **getattr(args, "model_kwargs", {}),
+        )
+        self.generator.model.requires_grad_(True)
+
+        self.real_score = QwenImageWrapper(model_name=self.real_model_name)
+        self.real_score.model.requires_grad_(False)
+
+        self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name)
+        self.fake_score.model.requires_grad_(True)
+
+        self.text_encoder = QwenImageTextEncoder(model_name=self.generator_name)
+        self.text_encoder.requires_grad_(False)
+
+        self.scheduler = self.generator.get_scheduler()
+        self.scheduler.timesteps = self.scheduler.timesteps.to(device)
+
+    def _get_timestep(
+            self,
+            min_timestep: int,
+            max_timestep: int,
+            batch_size: int,
+    ) -> torch.Tensor:
+
+        timestep = torch.randint(
+            min_timestep,
+            max_timestep,
+            [batch_size, ],
+            device=self.device,
+            dtype=torch.long
+        )
+
+        return timestep
+
+
+class SelfForcingT2IModel(T2IBaseModel):
+    def __init__(self, args, device):
+        super().__init__(args, device)
+        self.denoising_loss_func = get_denoising_loss(args.denoising_loss_type)()
+
+    def _run_generator(
+            self,
+            image_or_video_shape: List[int],
+            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            conditional_dict: dict,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Optionally simulate the generator's input from noise using backward simulation
+        and then run the generator for one-step.
+        Input:
+            - image_or_video_shape: a list containing the shape of the image or video [B, F, C, H, W].
+            - conditional_dict: a dictionary containing the conditional information (e.g. text embeddings, image embeddings).
+            - unconditional_dict: a dictionary containing the unconditional information (e.g. null/negative text embeddings, null/negative image embeddings).
+            - clean_latent: a tensor containing the clean latents [B, F, C, H, W]. Need to be passed when no backward simulation is used.
+            - initial_latent: a tensor containing the initial latents [B, F, C, H, W].
+        Output:
+            - pred_image: a tensor with shape [B, F, C, H, W].
+            - denoised_timestep: an integer
+        """
+        # Step 1: Sample noise and backward simulate the generator's input
+        assert getattr(self.args, "backward_simulation", True), "Backward simulation needs to be enabled"
+        # [b, img_s, 64]
+        noise_shape = image_or_video_shape.copy()
+        noise = torch.randn(noise_shape, device=self.device, dtype=self.dtype)
+
+        pred_image_or_video, denoised_timestep_from, denoised_timestep_to = self._consistency_backward_simulation(
+            noise=noise,
+            img_shapes=img_shapes,
+            **conditional_dict
+        )
+
+        return pred_image_or_video.to(self.dtype), None, denoised_timestep_from, denoised_timestep_to
+
+    def _consistency_backward_simulation(
+            self,
+            noise: torch.Tensor,  # [b, img_s, 64]
+            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            **conditional_dict: dict
+    ) -> torch.Tensor:
+        """
+        Simulate the generator's input from noise to avoid training/inference mismatch.
+        See Sec 4.5 of the DMD2 paper (https://arxiv.org/abs/2405.14867) for details.
+        Here we use the consistency sampler (https://arxiv.org/abs/2303.01469)
+        Input:
+            - noise: a tensor sampled from N(0, 1) with shape [B, F, C, H, W] where the number of frame is 1 for images.
+            - conditional_dict: a dictionary containing the conditional information (e.g. text embeddings, image embeddings).
+        Output:
+            - output: a tensor with shape [B, T, F, C, H, W].
+            T is the total number of timesteps. output[0] is a pure noise and output[i] and i>0
+            represents the x0 prediction at each timestep.
+        """
+        if self.inference_pipeline is None:
+            self._initialize_inference_pipeline()
+
+        return self.inference_pipeline.inference_with_trajectory(
+            noise=noise,
+            img_shapes=img_shapes,
+            **conditional_dict,
+        )
+
+    def _initialize_inference_pipeline(self):
+        """
+        Lazy initialize the inference pipeline during the first backward simulation run.
+        Here we encapsulate the inference code with a model-dependent outside function.
+        We pass our FSDP-wrapped modules into the pipeline to save memory.
+        """
+        self.inference_pipeline = BidirectionalTrainingT2IPipeline(
+            model_name=self.generator_name,
+            denoising_step_list=self.denoising_step_list,
+            scheduler=self.scheduler,
+            generator=self.generator,
+        )
