@@ -1,0 +1,8 @@
+#!/bin/bash
+
+export PYDEVD_WARN_EVALUATION_TIMEOUT=99999999
+export PYDEVD_INTERRUPT_THREAD_TIMEOUT=99999999
+export PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT=99999999
+
+python -m debugpy --listen 5679 --wait-for-client \
+    main.py

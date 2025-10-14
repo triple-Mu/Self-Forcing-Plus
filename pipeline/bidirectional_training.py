@@ -133,7 +133,7 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
                 device=device
             )
         else:
-            indices = torch.empty(1, dtype=torch.long, device=device)
+            indices = torch.empty((1, ), dtype=torch.long, device=device)
 
         dist.broadcast(indices, src=0)  # Broadcast the random indices to all ranks
         return indices.tolist()
@@ -184,7 +184,6 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
                         dtype=torch.long,
                         device=noise.device,
                     )
-
                     noisy_image_or_video = self.scheduler.add_noise(
                         denoised_pred,
                         torch.randn_like(denoised_pred),

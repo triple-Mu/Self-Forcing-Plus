@@ -546,7 +546,7 @@ class DMDT2I(SelfForcingT2IModel):
     def generator_loss(
             self,
             image_or_video_shape,
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            img_shapes: List[List[Tuple[int, int, int]]],  # [[1, img_h//16, img_w//16]]
             conditional_dict: dict,
             unconditional_dict: dict,
     ) -> Tuple[torch.Tensor, dict]:

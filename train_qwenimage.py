@@ -3,7 +3,8 @@ import os
 from omegaconf import OmegaConf
 import wandb
 
-from trainer import ScoreDistillationTrainer
+# from trainer import ScoreDistillationTrainer
+from trainer.distillation import TrainerT2I
 
 
 def main():
@@ -30,7 +31,7 @@ def main():
     config.wandb_save_dir = args.wandb_save_dir
     config.disable_wandb = args.disable_wandb
 
-    trainer = ScoreDistillationTrainer(config)
+    trainer = TrainerT2I(config)
     trainer.train()
 
     wandb.finish()

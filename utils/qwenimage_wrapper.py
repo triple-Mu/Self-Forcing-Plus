@@ -72,6 +72,8 @@ class QwenImageWrapper(nn.Module):
             kw = json.load(f)
         kw.pop('_class_name')
         kw.pop('_diffusers_version')
+        kw.pop('pooled_projection_dim')
+        kw['num_layers'] = 1
 
         self.model = QwenImageTransformer2DModel(**kw)
         self.model.eval()
@@ -154,7 +156,7 @@ class QwenImageWrapper(nn.Module):
         flow_pred = self.model(
             hidden_states=noisy_image_or_video,
             encoder_hidden_states=prompt_embeds,
-            encoder_attention_mask=prompt_embeds_mask,
+            encoder_hidden_states_mask=prompt_embeds_mask,
             timestep=input_timestep,
             img_shapes=img_shapes,
             txt_seq_lens=txt_seq_lens,

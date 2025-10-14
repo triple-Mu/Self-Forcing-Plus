@@ -220,7 +220,7 @@ class WanDiffusionWrapper(torch.nn.Module):
         self.post_init()
 
     def enable_gradient_checkpointing(self) -> None:
-        self.model.enable_gradient_checkpointing()
+        self.model.enable_gradient_checkpointing(True)
 
     def adding_cls_branch(self, atten_dim=1536, num_class=4, time_embed_dim=0) -> None:
         # NOTE: This is hard coded for WAN2.1-T2V-1.3B for now!!!!!!!!!!!!!!!!!!!!

@@ -697,7 +697,7 @@ class TrainerT2I:
         shape_idx = shape_idx[0].item()
 
         width, height = shapes[shape_idx]
-        image_or_video_shape = [batch_size, width // 16 * height // 16, 64]
+        image_or_video_shape = [batch_size, (width // 16) * (height // 16), 64]
 
         # Step 2: Extract the conditional infos
         with torch.no_grad():
@@ -718,7 +718,7 @@ class TrainerT2I:
         if train_generator:
             generator_loss, generator_log_dict = self.model.generator_loss(
                 image_or_video_shape=image_or_video_shape,
-                img_shapes=[(1, height // 16, width // 16)] * batch_size,
+                img_shapes=[[(1, height // 16, width // 16)]] * batch_size,
                 conditional_dict=conditional_dict,
                 unconditional_dict=unconditional_dict,
             )
@@ -739,7 +739,7 @@ class TrainerT2I:
         # Step 4: Store gradients for the critic (if training the critic)
         critic_loss, critic_log_dict = self.model.critic_loss(
             image_or_video_shape=image_or_video_shape,
-            img_shapes=[(1, height // 16, width // 16)] * batch_size,
+            img_shapes=[[(1, height // 16, width // 16)]] * batch_size,
             conditional_dict=conditional_dict,
             unconditional_dict=unconditional_dict,
         )

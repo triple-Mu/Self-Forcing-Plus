@@ -277,7 +277,7 @@ class T2IBaseModel(nn.Module):
         self.real_score = QwenImageWrapper(model_name=self.real_model_name)
         self.real_score.model.requires_grad_(False)
 
-        self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name)
+        self.fake_score = QwenImageWrapper(model_name=self.fake_model_name)
         self.fake_score.model.requires_grad_(True)
 
         self.text_encoder = QwenImageTextEncoder(model_name=self.generator_name)
