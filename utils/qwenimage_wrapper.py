@@ -109,10 +109,10 @@ class QwenImageWrapper(nn.Module):
             # }
             {
             "base_image_seq_len": 256,
-            "base_shift": math.log(3),
+            "base_shift": math.log(timestep_shift),
             "invert_sigmas": False,
             "max_image_seq_len": 8192,
-            "max_shift": math.log(3),
+            "max_shift": math.log(timestep_shift),
             "num_train_timesteps": 1000,
             "shift": 1.0,
             "shift_terminal": None,
@@ -124,6 +124,7 @@ class QwenImageWrapper(nn.Module):
             "use_karras_sigmas": False,
             }
         )
+        self.scheduler.set_timesteps(num_inference_steps=1000, mu=math.log(timestep_shift))
 
         # sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         # timesteps, num_inference_steps = retrieve_timesteps(
@@ -132,6 +133,7 @@ class QwenImageWrapper(nn.Module):
         #     sigmas=sigmas,
         #     mu=math.log(3),
         # )
+
         self.timesteps = self.scheduler.timesteps
         self.sigmas = self.scheduler.sigmas
 

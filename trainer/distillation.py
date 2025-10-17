@@ -698,6 +698,7 @@ class TrainerT2I:
 
         width, height = shapes[shape_idx]
         image_or_video_shape = [batch_size, (width // 16) * (height // 16), 64]
+        num_channels_latents = 16
 
         # Step 2: Extract the conditional infos
         with torch.inference_mode():
@@ -717,8 +718,10 @@ class TrainerT2I:
         # Step 3: Store gradients for the generator (if training the generator)
         if train_generator:
             generator_loss, generator_log_dict = self.model.generator_loss(
-                image_or_video_shape=image_or_video_shape,
-                img_shapes=[[(1, height // 16, width // 16)]] * batch_size,
+                batch_size=batch_size, # 1
+                num_channels_latents=num_channels_latents, # 16
+                height=height, # img_height
+                width=width, # img_width
                 conditional_dict=conditional_dict,
                 unconditional_dict=unconditional_dict,
             )

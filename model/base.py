@@ -252,13 +252,12 @@ class SelfForcingModel(BaseModel):
 class T2IBaseModel(nn.Module):
     def __init__(self, args, device):
         super().__init__()
-        self._initialize_models(args, device)
-
+        self.num_inference_steps = len(args.denoising_step_list)
         self.device = device
         self.args = args
         self.dtype = torch.bfloat16 if args.mixed_precision else torch.float32
         self.denoising_step_list = args.denoising_step_list
-        self.num_inference_steps = len(args.denoising_step_list)
+        self._initialize_models(args, device)
 
 
     def _initialize_models(self, args, device):
@@ -368,16 +367,16 @@ class SelfForcingT2IModel(T2IBaseModel):
 
         img_shapes = [[(1, height // 16, width // 16)]] * batch_size
         noise = torch.randn(
-            (batch_size, 1, height // 8, width // 8),
+            (batch_size, 1, num_channels_latents, height // 8, width // 8),
             device=self.device,
             dtype=self.dtype,
         )
-        noise = self.scheduler._pack_latents(
+        noise = self.text_encoder.pipeline._pack_latents(
             noise,
             batch_size=batch_size,
             num_channels_latents=num_channels_latents,
-            height=height,
-            width=width,
+            height=height // 8,
+            width=width // 8,
         )
         pred_image_or_video, denoised_timestep_from, denoised_timestep_to = self._consistency_backward_simulation(
             noise=noise,
@@ -424,7 +423,7 @@ class SelfForcingT2IModel(T2IBaseModel):
                         dtype=torch.long,
                         device=noise.device,
                     )
-                    noisy_image_or_video = self.scheduler.add_noise(
+                    noisy_image_or_video = self.add_noise(
                         denoised_pred,
                         torch.randn_like(denoised_pred),
                         next_timestep,

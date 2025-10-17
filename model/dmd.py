@@ -514,16 +514,23 @@ class DMDT2I(SelfForcingT2IModel):
 
     def generator_loss(
             self,
-            image_or_video_shape,
-            img_shapes: List[List[Tuple[int, int, int]]],  # [[1, img_h//16, img_w//16]]
+            batch_size: int,
+            num_channels_latents: int,
+            height: int,
+            width: int,
             conditional_dict: dict,
             unconditional_dict: dict,
     ) -> Tuple[torch.Tensor, dict]:
 
+        img_shapes = [[(1, height // 16, width // 16)]] * batch_size
+
         # Step 1: Unroll generator to obtain fake videos
         pred_image, denoised_timestep_from, denoised_timestep_to = self._run_generator(
-            image_or_video_shape=image_or_video_shape,
-            img_shapes=img_shapes,
+            batch_size=batch_size,
+            num_channels_latents=num_channels_latents,
+            height=height,
+            width=width,
+
             conditional_dict=conditional_dict,
         )
 
