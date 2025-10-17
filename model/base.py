@@ -7,8 +7,8 @@ import torch
 from pipeline import SelfForcingTrainingPipeline, BidirectionalTrainingPipeline, BidirectionalTrainingT2IPipeline
 from utils.loss import get_denoising_loss
 from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper, WanCLIPEncoder
-from utils.qwenimage_wrapper import QwenImageTextEncoder, QwenImageWrapper
-
+from utils.qwenimage_wrapper import QwenImageTextEncoder, QwenImageWrapper, QwenImageScheduler
+import math
 
 class BaseModel(nn.Module):
     def __init__(self, args, device):
@@ -257,34 +257,44 @@ class T2IBaseModel(nn.Module):
         self.device = device
         self.args = args
         self.dtype = torch.bfloat16 if args.mixed_precision else torch.float32
-        if hasattr(args, "denoising_step_list"):
-            self.denoising_step_list = torch.tensor(args.denoising_step_list, dtype=torch.long)
-            if args.warp_denoising_step:
-                timesteps = torch.cat((self.scheduler.timesteps.cpu(), torch.tensor([0], dtype=torch.float32)))
-                self.denoising_step_list = timesteps[1000 - self.denoising_step_list]
+        self.denoising_step_list = args.denoising_step_list
+        self.num_inference_steps = len(args.denoising_step_list)
+
 
     def _initialize_models(self, args, device):
         self.real_model_name = getattr(args, "real_name", "Qwen-Image")
         self.fake_model_name = getattr(args, "fake_name", "Qwen-Image")
         self.generator_name = getattr(args, "generator_name", "Qwen-Image")
+        num_inference_steps = self.num_inference_steps
 
         self.generator = QwenImageWrapper(
             model_name=self.generator_name,
-            **getattr(args, "model_kwargs", {}),
+            num_inference_steps=num_inference_steps,
+            pretrain_weight=getattr(args, 'pretrain_weight'),
         )
         self.generator.model.requires_grad_(True)
 
-        self.real_score = QwenImageWrapper(model_name=self.real_model_name)
+        self.real_score = QwenImageWrapper(
+            model_name=self.real_model_name,
+            num_inference_steps=num_inference_steps,
+            pretrain_weight=getattr(args, 'pretrain_weight'),
+        )
         self.real_score.model.requires_grad_(False)
 
-        self.fake_score = QwenImageWrapper(model_name=self.fake_model_name)
+        self.fake_score = QwenImageWrapper(
+            model_name=self.fake_model_name,
+            num_inference_steps=num_inference_steps,
+            pretrain_weight=getattr(args, 'pretrain_weight'),
+        )
         self.fake_score.model.requires_grad_(True)
 
         self.text_encoder = QwenImageTextEncoder(model_name=self.generator_name)
         self.text_encoder.requires_grad_(False)
 
-        self.scheduler = self.generator.get_scheduler()
-        self.scheduler.timesteps = self.scheduler.timesteps.to(device)
+        self.scheduler = self.generator.scheduler
+        self.scheduler.timesteps = self.scheduler.timesteps.to(device=device)
+        self.scheduler.sigmas = self.scheduler.sigmas.to(device=device)
+
 
     def _get_timestep(
             self,
@@ -296,12 +306,48 @@ class T2IBaseModel(nn.Module):
         timestep = torch.randint(
             min_timestep,
             max_timestep,
-            [batch_size, ],
+            (batch_size, ),
             device=self.device,
             dtype=torch.long
         )
 
         return timestep
+
+    def _get_step_index(self, num_steps: int) -> int:
+        rank = dist.get_rank() if dist.is_initialized() else 0
+
+        if rank == 0:
+            indices = torch.randint(
+                low=0,
+                high=num_steps,
+                size=(1,),
+                dtype=torch.long,
+                device=self.device,
+            )
+        else:
+            indices = torch.empty(
+                (1, ),
+                dtype=torch.long,
+                device=self.device,
+            )
+        # self.denoising_step_list = [1000.0000,  937.5000,  833.3333,  625.0000]
+        # self.scheduler.timesteps = [1000, ..., 0]
+        
+        dist.broadcast(indices, src=0)
+        cur_index = indices[0].item()
+        return cur_index
+    
+    def add_noise(self, original_samples: torch.Tensor, noise: torch.Tensor, timestep: torch.Tensor):
+        timesteps = self.scheduler.timesteps
+        sigmas = self.scheduler.sigmas
+
+        timestep_id = torch.argmin(
+            (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(),
+            dim=1,
+        )
+        sigma = sigmas[timestep_id]
+        sample = (1 - sigma) * original_samples + sigma * noise
+        return sample.type_as(noise)
 
 
 class SelfForcingT2IModel(T2IBaseModel):
@@ -311,73 +357,107 @@ class SelfForcingT2IModel(T2IBaseModel):
 
     def _run_generator(
             self,
-            image_or_video_shape: List[int],
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            batch_size: int, # 1
+            num_channels_latents: int, # 16
+            height: int, # img_height
+            width: int, # img_width
             conditional_dict: dict,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Optionally simulate the generator's input from noise using backward simulation
-        and then run the generator for one-step.
-        Input:
-            - image_or_video_shape: a list containing the shape of the image or video [B, F, C, H, W].
-            - conditional_dict: a dictionary containing the conditional information (e.g. text embeddings, image embeddings).
-            - unconditional_dict: a dictionary containing the unconditional information (e.g. null/negative text embeddings, null/negative image embeddings).
-            - clean_latent: a tensor containing the clean latents [B, F, C, H, W]. Need to be passed when no backward simulation is used.
-            - initial_latent: a tensor containing the initial latents [B, F, C, H, W].
-        Output:
-            - pred_image: a tensor with shape [B, F, C, H, W].
-            - denoised_timestep: an integer
-        """
+    ) -> Tuple[torch.Tensor, int, int]:
         # Step 1: Sample noise and backward simulate the generator's input
         assert getattr(self.args, "backward_simulation", True), "Backward simulation needs to be enabled"
-        # [b, img_s, 64]
-        noise_shape = image_or_video_shape.copy()
-        noise = torch.randn(noise_shape, device=self.device, dtype=self.dtype)
 
+        img_shapes = [[(1, height // 16, width // 16)]] * batch_size
+        noise = torch.randn(
+            (batch_size, 1, height // 8, width // 8),
+            device=self.device,
+            dtype=self.dtype,
+        )
+        noise = self.scheduler._pack_latents(
+            noise,
+            batch_size=batch_size,
+            num_channels_latents=num_channels_latents,
+            height=height,
+            width=width,
+        )
         pred_image_or_video, denoised_timestep_from, denoised_timestep_to = self._consistency_backward_simulation(
             noise=noise,
             img_shapes=img_shapes,
             **conditional_dict
         )
 
-        return pred_image_or_video.to(self.dtype), None, denoised_timestep_from, denoised_timestep_to
+        return pred_image_or_video.to(self.dtype), denoised_timestep_from, denoised_timestep_to
 
     def _consistency_backward_simulation(
             self,
             noise: torch.Tensor,  # [b, img_s, 64]
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            img_shapes: List[List[Tuple[int, int, int]]],  # [[1, img_h//16, img_w//16]]
             **conditional_dict: dict
-    ) -> torch.Tensor:
-        """
-        Simulate the generator's input from noise to avoid training/inference mismatch.
-        See Sec 4.5 of the DMD2 paper (https://arxiv.org/abs/2405.14867) for details.
-        Here we use the consistency sampler (https://arxiv.org/abs/2303.01469)
-        Input:
-            - noise: a tensor sampled from N(0, 1) with shape [B, F, C, H, W] where the number of frame is 1 for images.
-            - conditional_dict: a dictionary containing the conditional information (e.g. text embeddings, image embeddings).
-        Output:
-            - output: a tensor with shape [B, T, F, C, H, W].
-            T is the total number of timesteps. output[0] is a pure noise and output[i] and i>0
-            represents the x0 prediction at each timestep.
-        """
-        if self.inference_pipeline is None:
-            self._initialize_inference_pipeline()
+    ) -> Tuple[torch.Tensor, int, int]:
 
-        return self.inference_pipeline.inference_with_trajectory(
-            noise=noise,
-            img_shapes=img_shapes,
-            **conditional_dict,
-        )
+        batch_size = noise.size(0)
+        noisy_image_or_video = noise
 
-    def _initialize_inference_pipeline(self):
-        """
-        Lazy initialize the inference pipeline during the first backward simulation run.
-        Here we encapsulate the inference code with a model-dependent outside function.
-        We pass our FSDP-wrapped modules into the pipeline to save memory.
-        """
-        self.inference_pipeline = BidirectionalTrainingT2IPipeline(
-            model_name=self.generator_name,
-            denoising_step_list=self.denoising_step_list,
-            scheduler=self.scheduler,
-            generator=self.generator,
-        )
+        exit_step = self._get_step_index(self.num_inference_steps)
+
+        for index, current_timestep in enumerate(self.denoising_step_list):
+            timestep = torch.full(
+                (batch_size,),
+                fill_value=current_timestep,
+                dtype=torch.long,
+                device=self.device,
+            )
+            if noise.device.index == 0:
+                print(f'train generator: {timestep=}\n', end='')
+
+            if index != exit_step:
+                with torch.inference_mode():
+                    _, denoised_pred = self.generator(
+                        noisy_image_or_video=noisy_image_or_video,
+                        conditional_dict=conditional_dict,
+                        timestep=timestep,
+                        img_shapes=img_shapes,
+                    )  # [B, img_s, 64]
+
+                    next_timestep = torch.full(
+                        (batch_size,),
+                        fill_value=self.denoising_step_list[index + 1],
+                        dtype=torch.long,
+                        device=noise.device,
+                    )
+                    noisy_image_or_video = self.scheduler.add_noise(
+                        denoised_pred,
+                        torch.randn_like(denoised_pred),
+                        next_timestep,
+                    )
+            else:
+                _, denoised_pred = self.generator(
+                    noisy_image_or_video=noisy_image_or_video,
+                    conditional_dict=conditional_dict,
+                    timestep=timestep,
+                    img_shapes=img_shapes,
+                )  # [B, img_s, 64]
+                break
+                
+        if exit_step == self.num_inference_steps - 1:
+            denoised_timestep_to = 0
+            denoised_timestep_from = 1000 - torch.argmin(
+                (
+                    self.scheduler.timesteps.cuda() - self.denoising_step_list[exit_step].cuda()
+                ).abs(),
+                dim=0,
+            ).item()
+        else:
+            denoised_timestep_to = 1000 - torch.argmin(
+                (
+                    self.scheduler.timesteps.cuda() - self.denoising_step_list[exit_step + 1].cuda()
+                ).abs(),
+                dim=0,
+            ).item()
+            denoised_timestep_from = 1000 - torch.argmin(
+                (
+                    self.scheduler.timesteps.cuda() - self.denoising_step_list[exit_step].cuda()
+                ).abs(),
+                dim=0,
+            ).item()
+        
+        return denoised_pred, denoised_timestep_from, denoised_timestep_to

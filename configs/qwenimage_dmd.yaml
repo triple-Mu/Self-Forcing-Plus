@@ -1,10 +1,11 @@
-generator_ckpt: checkpoints/ode_init.pt
+# generator_ckpt: checkpoints/ode_init.pt
 generator_fsdp_wrap_strategy: size
 real_score_fsdp_wrap_strategy: size
 fake_score_fsdp_wrap_strategy: size
 real_name: Qwen-Image
 fake_name: Qwen-Image
 generator_name: Qwen-Image
+pretrain_weight: Qwen-Image/transformer/diffusion_pytorch_model.safetensors
 text_encoder_fsdp_wrap_strategy: size
 denoising_step_list:
   - 1000
@@ -37,7 +38,7 @@ beta1_critic: 0.0
 beta2_critic: 0.999
 weight_decay: 0.01
 data_type: text_file
-data_path: prompts/MovieGenVideoBench.txt
+data_path: prompts.txt
 batch_size: 1
 ema_weight: 0.99
 ema_start_step: 200

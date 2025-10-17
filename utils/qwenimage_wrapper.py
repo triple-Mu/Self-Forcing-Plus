@@ -1,14 +1,17 @@
 import os
+import math
 import types
 import json
 from typing import List, Optional, Tuple
+import numpy as np
 import torch
 from torch import nn
 
 from utils.scheduler import SchedulerInterface, FlowMatchScheduler
 
-from diffusers import QwenImagePipeline, QwenImageTransformer2DModel
+from diffusers import QwenImagePipeline, QwenImageTransformer2DModel, FlowMatchEulerDiscreteScheduler
 from transformers import Qwen2Tokenizer, Qwen2_5_VLForConditionalGeneration
+from safetensors.torch import load_file
 
 
 class QwenImageTextEncoder(nn.Module):
@@ -62,6 +65,8 @@ class QwenImageWrapper(nn.Module):
             self,
             model_name="Qwen-Image",
             timestep_shift=8.0,
+            num_inference_steps=4,
+            pretrain_weight=None,
             *args,
             **kwargs,
     ):
@@ -73,69 +78,105 @@ class QwenImageWrapper(nn.Module):
         kw.pop('_class_name')
         kw.pop('_diffusers_version')
         kw.pop('pooled_projection_dim')
-        kw['num_layers'] = 1
+        # kw['num_layers'] = 1
 
         self.model = QwenImageTransformer2DModel(**kw)
-        self.model.eval()
+        if pretrain_weight is not None:
+            sd = load_file(pretrain_weight)
+            self.model.load_state_dict(sd, strict=True)
 
-        self.scheduler = FlowMatchScheduler(
-            shift=timestep_shift, sigma_min=0.0, extra_one_step=True
+        # self.scheduler = FlowMatchScheduler(
+        #     shift=timestep_shift, sigma_min=0.0, extra_one_step=True
+        # )
+        # self.scheduler.set_timesteps(1000, training=True)
+
+        self.scheduler = FlowMatchEulerDiscreteScheduler.from_config(
+            # {
+            # "base_image_seq_len": 256,
+            # "base_shift": math.log(3),  # We use shift=3 in distillation
+            # "invert_sigmas": False,
+            # "max_image_seq_len": 8192,
+            # "max_shift": math.log(3),  # We use shift=3 in distillation
+            # "num_train_timesteps": 1000,
+            # "shift": timestep_shift,
+            # "shift_terminal": None,  # set shift_terminal to None
+            # "stochastic_sampling": False,
+            # "time_shift_type": "exponential",
+            # "use_beta_sigmas": False,
+            # "use_dynamic_shifting": False,
+            # "use_exponential_sigmas": False,
+            # "use_karras_sigmas": False,
+            # }
+            {
+            "base_image_seq_len": 256,
+            "base_shift": math.log(3),
+            "invert_sigmas": False,
+            "max_image_seq_len": 8192,
+            "max_shift": math.log(3),
+            "num_train_timesteps": 1000,
+            "shift": 1.0,
+            "shift_terminal": None,
+            "stochastic_sampling": False,
+            "time_shift_type": "exponential",
+            "use_beta_sigmas": False,
+            "use_dynamic_shifting": True,
+            "use_exponential_sigmas": False,
+            "use_karras_sigmas": False,
+            }
         )
-        self.scheduler.set_timesteps(1000, training=True)
 
-        self.post_init()
+        # sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+        # timesteps, num_inference_steps = retrieve_timesteps(
+        #     self.scheduler,
+        #     num_inference_steps,
+        #     sigmas=sigmas,
+        #     mu=math.log(3),
+        # )
+        self.timesteps = self.scheduler.timesteps
+        self.sigmas = self.scheduler.sigmas
 
     def enable_gradient_checkpointing(self) -> None:
         self.model.enable_gradient_checkpointing()
 
     def _convert_flow_pred_to_x0(self, flow_pred: torch.Tensor, xt: torch.Tensor,
                                  timestep: torch.Tensor) -> torch.Tensor:
-        """
-        Convert flow matching's prediction to x0 prediction.
-        flow_pred: the prediction with shape [B, C, H, W]
-        xt: the input noisy data with shape [B, C, H, W]
-        timestep: the timestep with shape [B]
-
-        pred = noise - x0
-        x_t = (1-sigma_t) * x0 + sigma_t * noise
-        we have x0 = x_t - sigma_t * pred
-        see derivations https://chatgpt.com/share/67bf8589-3d04-8008-bc6e-4cf1a24e2d0e
-        """
         # use higher precision for calculations
         original_dtype = flow_pred.dtype
-        flow_pred, xt, sigmas, timesteps = map(
-            lambda x: x.double().to(flow_pred.device),
-            [flow_pred, xt, self.scheduler.sigmas, self.scheduler.timesteps]
-        )
+        original_device = flow_pred.device
+
+        flow_pred = flow_pred.to(dtype=torch.float32, device=original_device)
+        xt = xt.to(dtype=torch.float32, device=original_device)
+        sigmas = self.sigmas.to(dtype=torch.float32, device=original_device)
+        timesteps = self.timesteps.to(dtype=torch.float32, device=original_device)
 
         timestep_id = torch.argmin(
-            (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma_t = sigmas[timestep_id].reshape(-1, 1, 1)
+            (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(),
+            dim=1,
+        )
+        sigma_t = sigmas[timestep_id]
         x0_pred = xt - sigma_t * flow_pred
         return x0_pred.to(original_dtype)
 
     @staticmethod
     def _convert_x0_to_flow_pred(scheduler, x0_pred: torch.Tensor, xt: torch.Tensor,
                                  timestep: torch.Tensor) -> torch.Tensor:
-        """
-        Convert x0 prediction to flow matching's prediction.
-        x0_pred: the x0 prediction with shape [B, C, H, W]
-        xt: the input noisy data with shape [B, C, H, W]
-        timestep: the timestep with shape [B]
-
-        pred = (x_t - x_0) / sigma_t
-        """
         # use higher precision for calculations
         original_dtype = x0_pred.dtype
-        x0_pred, xt, sigmas, timesteps = map(
-            lambda x: x.double().to(x0_pred.device),
-            [x0_pred, xt, scheduler.sigmas, scheduler.timesteps]
-        )
+        original_device = x0_pred.device
+
+        x0_pred = x0_pred.to(dtype=torch.float32, device=original_device)
+        xt = xt.to(dtype=torch.float32, device=original_device)
+        sigmas = sigmas.to(dtype=torch.float32, device=original_device)
+        timesteps = timesteps.to(dtype=torch.float32, device=original_device)
+
         timestep_id = torch.argmin(
-            (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma_t = sigmas[timestep_id].reshape(-1, 1, 1)
+            (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(),
+            dim=1,
+        )
+        sigma_t = sigmas[timestep_id]
         flow_pred = (xt - x0_pred) / sigma_t
         return flow_pred.to(original_dtype)
+
 
     def forward(
             self,
@@ -149,7 +190,7 @@ class QwenImageWrapper(nn.Module):
         txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
 
         # [B]
-        input_timestep = timestep
+        input_timestep = timestep.float() / 1000
 
         # X0 prediction
         # [b, img_s, 64]
@@ -174,24 +215,5 @@ class QwenImageWrapper(nn.Module):
 
         return flow_pred, pred_x0
 
-    def get_scheduler(self) -> SchedulerInterface:
-        """
-        Update the current scheduler with the interface's static method
-        """
-        scheduler = self.scheduler
-        scheduler.convert_x0_to_noise = types.MethodType(
-            SchedulerInterface.convert_x0_to_noise, scheduler)
-        scheduler.convert_noise_to_x0 = types.MethodType(
-            SchedulerInterface.convert_noise_to_x0, scheduler)
-        scheduler.convert_velocity_to_x0 = types.MethodType(
-            SchedulerInterface.convert_velocity_to_x0, scheduler)
-        self.scheduler = scheduler
-        return scheduler
 
-    def post_init(self):
-        """
-        A few custom initialization steps that should be called after the object is created.
-        Currently, the only one we have is to bind a few methods to scheduler.
-        We can gradually add more methods here if needed.
-        """
-        self.get_scheduler()
+QwenImageScheduler = FlowMatchEulerDiscreteScheduler

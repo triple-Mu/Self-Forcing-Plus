@@ -1,6 +1,6 @@
 from typing import List, Tuple
 import torch
-from torch import nn
+from torch import int16, nn
 from utils.wan_wrapper import WanDiffusionWrapper
 from utils.qwenimage_wrapper import QwenImageWrapper
 from utils.scheduler import SchedulerInterface
@@ -121,7 +121,7 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
         if self.denoising_step_list[-1] == 0:
             self.denoising_step_list = self.denoising_step_list[:-1]
 
-    def generate_and_sync_list(self, num_denoising_steps, device):
+    def generate_and_sync_list(self, num_denoising_steps: int, device: torch.device):
         rank = dist.get_rank() if dist.is_initialized() else 0
 
         if rank == 0:
@@ -130,10 +130,15 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
                 low=0,
                 high=num_denoising_steps,
                 size=(1,),
-                device=device
+                dtype=torch.long,
+                device=device,
             )
         else:
-            indices = torch.empty((1, ), dtype=torch.long, device=device)
+            indices = torch.empty(
+                (1, ),
+                dtype=torch.long,
+                device=device,
+            )
 
         dist.broadcast(indices, src=0)  # Broadcast the random indices to all ranks
         return indices.tolist()
@@ -141,20 +146,9 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
     def inference_with_trajectory(
             self,
             noise: torch.Tensor,
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            img_shapes: List[List[Tuple[int, int, int]]],  # [[1, img_h//16, img_w//16]]
             **conditional_dict,
     ) -> torch.Tensor:
-        """
-        Perform inference on the given noise and text prompts.
-        Inputs:
-            noise (torch.Tensor): The input noise tensor of shape
-                (batch_size, num_frames, num_channels, height, width).
-            text_prompts (List[str]): The list of text prompts.
-        Outputs:
-            video (torch.Tensor): The generated video tensor of shape
-                (batch_size, num_frames, num_channels, height, width). It is normalized to be in the range [0, 1].
-        """
-
         # initial point
         noisy_image_or_video = noise
         num_denoising_steps = len(self.denoising_step_list)
@@ -166,9 +160,11 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
             timestep = torch.full(
                 (noise.size(0),),
                 fill_value=current_timestep,
-                device=noise.device,
                 dtype=torch.long,
+                device=noise.device,
             )
+            if noise.device.index == 0:
+                print(f'train generator: {timestep=}\n', end='')
             if not exit_flag:
                 with torch.no_grad():
                     _, denoised_pred = self.generator(

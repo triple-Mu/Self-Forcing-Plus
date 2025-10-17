@@ -700,7 +700,7 @@ class TrainerT2I:
         image_or_video_shape = [batch_size, (width // 16) * (height // 16), 64]
 
         # Step 2: Extract the conditional infos
-        with torch.no_grad():
+        with torch.inference_mode():
             conditional_dict = self.model.text_encoder(
                 text_prompts=text_prompts,
             )
