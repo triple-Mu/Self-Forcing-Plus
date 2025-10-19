@@ -21,7 +21,7 @@ class QwenImageTextEncoder(nn.Module):
             subfolder='text_encoder',
             dtype=torch.bfloat16,
         )
-        self.text_encoder.eval()
+        self.text_encoder.eval().requires_grad_(False)
 
         self.tokenizer: Qwen2Tokenizer = Qwen2Tokenizer.from_pretrained(
             model_name,
@@ -62,7 +62,6 @@ class QwenImageWrapper(nn.Module):
             self,
             model_name="Qwen-Image",
             timestep_shift=8.0,
-            *args,
             **kwargs,
     ):
         super().__init__()
@@ -73,10 +72,9 @@ class QwenImageWrapper(nn.Module):
         kw.pop('_class_name')
         kw.pop('_diffusers_version')
         kw.pop('pooled_projection_dim')
-        kw['num_layers'] = 1
+        # kw['num_layers'] = 1
 
         self.model = QwenImageTransformer2DModel(**kw)
-        self.model.eval()
 
         self.scheduler = FlowMatchScheduler(
             shift=timestep_shift, sigma_min=0.0, extra_one_step=True
@@ -110,7 +108,7 @@ class QwenImageWrapper(nn.Module):
 
         timestep_id = torch.argmin(
             (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma_t = sigmas[timestep_id].reshape(-1, 1, 1)
+        sigma_t = sigmas[timestep_id]
         x0_pred = xt - sigma_t * flow_pred
         return x0_pred.to(original_dtype)
 
@@ -133,7 +131,7 @@ class QwenImageWrapper(nn.Module):
         )
         timestep_id = torch.argmin(
             (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma_t = sigmas[timestep_id].reshape(-1, 1, 1)
+        sigma_t = sigmas[timestep_id]
         flow_pred = (xt - x0_pred) / sigma_t
         return flow_pred.to(original_dtype)
 
@@ -142,14 +140,11 @@ class QwenImageWrapper(nn.Module):
             noisy_image_or_video: torch.Tensor,  # [b, img_s, 64]
             conditional_dict: dict,  # [b, txt_s, 3584], [b, txt_s, 3584]
             timestep: torch.Tensor,  # [b]
-            img_shapes: List[Tuple[int, int, int]],  # [1, img_h//16, img_w//16]
+            img_shapes: List[List[Tuple[int, int, int]]],  # [1, img_h//16, img_w//16]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         prompt_embeds = conditional_dict["prompt_embeds"]
         prompt_embeds_mask = conditional_dict["prompt_embeds_mask"]
         txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
-
-        # [B]
-        input_timestep = timestep
 
         # X0 prediction
         # [b, img_s, 64]
@@ -157,7 +152,7 @@ class QwenImageWrapper(nn.Module):
             hidden_states=noisy_image_or_video,
             encoder_hidden_states=prompt_embeds,
             encoder_hidden_states_mask=prompt_embeds_mask,
-            timestep=input_timestep,
+            timestep=(timestep / 1000).float(),
             img_shapes=img_shapes,
             txt_seq_lens=txt_seq_lens,
             guidance=None,

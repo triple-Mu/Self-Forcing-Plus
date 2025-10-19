@@ -315,19 +315,7 @@ class SelfForcingT2IModel(T2IBaseModel):
             img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
             conditional_dict: dict,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Optionally simulate the generator's input from noise using backward simulation
-        and then run the generator for one-step.
-        Input:
-            - image_or_video_shape: a list containing the shape of the image or video [B, F, C, H, W].
-            - conditional_dict: a dictionary containing the conditional information (e.g. text embeddings, image embeddings).
-            - unconditional_dict: a dictionary containing the unconditional information (e.g. null/negative text embeddings, null/negative image embeddings).
-            - clean_latent: a tensor containing the clean latents [B, F, C, H, W]. Need to be passed when no backward simulation is used.
-            - initial_latent: a tensor containing the initial latents [B, F, C, H, W].
-        Output:
-            - pred_image: a tensor with shape [B, F, C, H, W].
-            - denoised_timestep: an integer
-        """
+
         # Step 1: Sample noise and backward simulate the generator's input
         assert getattr(self.args, "backward_simulation", True), "Backward simulation needs to be enabled"
         # [b, img_s, 64]
@@ -348,18 +336,7 @@ class SelfForcingT2IModel(T2IBaseModel):
             img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
             **conditional_dict: dict
     ) -> torch.Tensor:
-        """
-        Simulate the generator's input from noise to avoid training/inference mismatch.
-        See Sec 4.5 of the DMD2 paper (https://arxiv.org/abs/2405.14867) for details.
-        Here we use the consistency sampler (https://arxiv.org/abs/2303.01469)
-        Input:
-            - noise: a tensor sampled from N(0, 1) with shape [B, F, C, H, W] where the number of frame is 1 for images.
-            - conditional_dict: a dictionary containing the conditional information (e.g. text embeddings, image embeddings).
-        Output:
-            - output: a tensor with shape [B, T, F, C, H, W].
-            T is the total number of timesteps. output[0] is a pure noise and output[i] and i>0
-            represents the x0 prediction at each timestep.
-        """
+
         if self.inference_pipeline is None:
             self._initialize_inference_pipeline()
 

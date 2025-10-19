@@ -135,7 +135,8 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
         else:
             indices = torch.empty((1, ), dtype=torch.long, device=device)
 
-        dist.broadcast(indices, src=0)  # Broadcast the random indices to all ranks
+        if dist.is_initialized():
+            dist.broadcast(indices, src=0)  # Broadcast the random indices to all ranks
         return indices.tolist()
 
     def inference_with_trajectory(
@@ -144,16 +145,6 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
             img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
             **conditional_dict,
     ) -> torch.Tensor:
-        """
-        Perform inference on the given noise and text prompts.
-        Inputs:
-            noise (torch.Tensor): The input noise tensor of shape
-                (batch_size, num_frames, num_channels, height, width).
-            text_prompts (List[str]): The list of text prompts.
-        Outputs:
-            video (torch.Tensor): The generated video tensor of shape
-                (batch_size, num_frames, num_channels, height, width). It is normalized to be in the range [0, 1].
-        """
 
         # initial point
         noisy_image_or_video = noise
