@@ -1,14 +1,14 @@
 import os
-import types
 import json
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 import torch
 from torch import nn
 
-from utils.scheduler import SchedulerInterface, FlowMatchScheduler
+from utils.scheduler import FlowMatchScheduler
 
 from diffusers import QwenImagePipeline, QwenImageTransformer2DModel
 from transformers import Qwen2Tokenizer, Qwen2_5_VLForConditionalGeneration
+from safetensors.torch import load_file
 
 
 class QwenImageTextEncoder(nn.Module):
@@ -61,7 +61,7 @@ class QwenImageWrapper(nn.Module):
     def __init__(
             self,
             model_name="Qwen-Image",
-            timestep_shift=8.0,
+            timestep_shift=5.0,
             pretrain_weight=None,
             **kwargs,
     ):
@@ -73,11 +73,11 @@ class QwenImageWrapper(nn.Module):
         kw.pop('_class_name')
         kw.pop('_diffusers_version')
         kw.pop('pooled_projection_dim')
-        # kw['num_layers'] = 1
+        kw['num_layers'] = 1
+        pretrain_weight = None
 
         self.model = QwenImageTransformer2DModel(**kw)
         if pretrain_weight is not None:
-            from safetensors.torch import load_file
             state_dict = load_file(pretrain_weight)
             self.model.load_state_dict(state_dict, strict=True)
             print(f'load {pretrain_weight} finish!\n', end='')
@@ -87,17 +87,19 @@ class QwenImageWrapper(nn.Module):
         )
         self.scheduler.set_timesteps(1000, training=True)
 
-        self.post_init()
-
     def enable_gradient_checkpointing(self) -> None:
         self.model.enable_gradient_checkpointing()
 
-    def _convert_flow_pred_to_x0(self, flow_pred: torch.Tensor, xt: torch.Tensor,
-                                 timestep: torch.Tensor) -> torch.Tensor:
+    def _convert_flow_pred_to_x0(
+            self,
+            flow_pred: torch.Tensor, # [b, c, 1, h, w]
+            xt: torch.Tensor, # [b, c, 1, h, w]
+            timestep: torch.Tensor,
+        ) -> torch.Tensor:
         """
         Convert flow matching's prediction to x0 prediction.
-        flow_pred: the prediction with shape [B, C, H, W]
-        xt: the input noisy data with shape [B, C, H, W]
+        flow_pred: the prediction with shape [B, C, 1, H, W]
+        xt: the input noisy data with shape [B, C, 1, H, W]
         timestep: the timestep with shape [B]
 
         pred = noise - x0
@@ -107,13 +109,17 @@ class QwenImageWrapper(nn.Module):
         """
         # use higher precision for calculations
         original_dtype = flow_pred.dtype
-        flow_pred, xt, sigmas, timesteps = map(
-            lambda x: x.double().to(flow_pred.device),
-            [flow_pred, xt, self.scheduler.sigmas, self.scheduler.timesteps]
-        )
+        device = flow_pred.device
+
+        flow_pred = flow_pred.to(device=device, dtype=torch.float32)
+        xt = xt.to(device=device, dtype=torch.float32)
+        sigmas = self.scheduler.sigmas.to(device=device, dtype=torch.float32)
+        timesteps = self.scheduler.timesteps.to(device=device, dtype=torch.float32)
 
         timestep_id = torch.argmin(
-            (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
+            (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(),
+            dim=1,
+        )
         sigma_t = sigmas[timestep_id]
         x0_pred = xt - sigma_t * flow_pred
         return x0_pred.to(original_dtype)
@@ -123,31 +129,45 @@ class QwenImageWrapper(nn.Module):
                                  timestep: torch.Tensor) -> torch.Tensor:
         """
         Convert x0 prediction to flow matching's prediction.
-        x0_pred: the x0 prediction with shape [B, C, H, W]
-        xt: the input noisy data with shape [B, C, H, W]
+        x0_pred: the x0 prediction with shape [B, C, 1, H, W]
+        xt: the input noisy data with shape [B, C, 1, H, W]
         timestep: the timestep with shape [B]
 
         pred = (x_t - x_0) / sigma_t
         """
         # use higher precision for calculations
         original_dtype = x0_pred.dtype
-        x0_pred, xt, sigmas, timesteps = map(
-            lambda x: x.double().to(x0_pred.device),
-            [x0_pred, xt, scheduler.sigmas, scheduler.timesteps]
-        )
+        device = x0_pred.device
+
+        x0_pred = x0_pred.to(device=device, dtype=torch.float32)
+        xt = xt.to(device=device, dtype=torch.float32)
+        sigmas = scheduler.sigmas.to(device=device, dtype=torch.float32)
+        timesteps = scheduler.timesteps.to(device=device, dtype=torch.float32)
+
         timestep_id = torch.argmin(
-            (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
+            (timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(),
+            dim=1,
+        )
         sigma_t = sigmas[timestep_id]
         flow_pred = (xt - x0_pred) / sigma_t
         return flow_pred.to(original_dtype)
 
     def forward(
             self,
-            noisy_image_or_video: torch.Tensor,  # [b, img_s, 64]
+            noisy_image_or_video: torch.Tensor,  # [b, 16, 1, h//8, w//8]
             conditional_dict: dict,  # [b, txt_s, 3584], [b, txt_s, 3584]
             timestep: torch.Tensor,  # [b]
-            img_shapes: List[List[Tuple[int, int, int]]],  # [1, img_h//16, img_w//16]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        b, _16, _1, h, w = noisy_image_or_video.shape
+        img_shapes = [[(1, h//2, w//2)]] * b # [1, h//16, w//16]
+
+        # [b, img_seq, 64]
+        _noisy_image_or_video = QwenImagePipeline._pack_latents(
+            noisy_image_or_video,
+            b, _16, h, w,
+        )
+
         prompt_embeds = conditional_dict["prompt_embeds"]
         prompt_embeds_mask = conditional_dict["prompt_embeds_mask"]
         txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
@@ -155,7 +175,7 @@ class QwenImageWrapper(nn.Module):
         # X0 prediction
         # [b, img_s, 64]
         flow_pred = self.model(
-            hidden_states=noisy_image_or_video,
+            hidden_states=_noisy_image_or_video,
             encoder_hidden_states=prompt_embeds,
             encoder_hidden_states_mask=prompt_embeds_mask,
             timestep=(timestep / 1000).float(),
@@ -167,6 +187,13 @@ class QwenImageWrapper(nn.Module):
             return_dict=False,
         )[0]
 
+        flow_pred = QwenImagePipeline._unpack_latents(
+            flow_pred,
+            h * 8,
+            w * 8,
+            8
+        )
+
         pred_x0 = self._convert_flow_pred_to_x0(
             flow_pred=flow_pred,
             xt=noisy_image_or_video,
@@ -174,25 +201,3 @@ class QwenImageWrapper(nn.Module):
         )
 
         return flow_pred, pred_x0
-
-    def get_scheduler(self) -> SchedulerInterface:
-        """
-        Update the current scheduler with the interface's static method
-        """
-        scheduler = self.scheduler
-        scheduler.convert_x0_to_noise = types.MethodType(
-            SchedulerInterface.convert_x0_to_noise, scheduler)
-        scheduler.convert_noise_to_x0 = types.MethodType(
-            SchedulerInterface.convert_noise_to_x0, scheduler)
-        scheduler.convert_velocity_to_x0 = types.MethodType(
-            SchedulerInterface.convert_velocity_to_x0, scheduler)
-        self.scheduler = scheduler
-        return scheduler
-
-    def post_init(self):
-        """
-        A few custom initialization steps that should be called after the object is created.
-        Currently, the only one we have is to bind a few methods to scheduler.
-        We can gradually add more methods here if needed.
-        """
-        self.get_scheduler()

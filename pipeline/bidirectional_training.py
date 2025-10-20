@@ -141,8 +141,7 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
 
     def inference_with_trajectory(
             self,
-            noise: torch.Tensor,
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            noise: torch.Tensor, # [b, 16, 1, h//8, w//8]
             **conditional_dict,
     ) -> torch.Tensor:
 
@@ -166,8 +165,7 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
                         noisy_image_or_video=noisy_image_or_video,
                         conditional_dict=conditional_dict,
                         timestep=timestep,
-                        img_shapes=img_shapes,
-                    )  # [B, img_s, 64]
+                    )  # [B, 16, 1, h//8, w//8]
 
                     next_timestep = torch.full(
                         (noise.size(0),),
@@ -175,9 +173,11 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
                         dtype=torch.long,
                         device=noise.device,
                     )
+
+                    next_noise = torch.randn_like(denoised_pred)
                     noisy_image_or_video = self.scheduler.add_noise(
                         denoised_pred,
-                        torch.randn_like(denoised_pred),
+                        next_noise,
                         next_timestep,
                     )
             else:
@@ -185,8 +185,7 @@ class BidirectionalTrainingT2IPipeline(nn.Module):
                     noisy_image_or_video=noisy_image_or_video,
                     conditional_dict=conditional_dict,
                     timestep=timestep,
-                    img_shapes=img_shapes,
-                )  # [B, img_s, 64]
+                )  # [B, 16, 1, h//8, w//8]
                 break
 
         if exit_flags[0] == len(self.denoising_step_list) - 1:

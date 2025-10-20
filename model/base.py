@@ -268,8 +268,9 @@ class T2IBaseModel(nn.Module):
         self.fake_model_name = getattr(args, "fake_name", "Qwen-Image")
         self.generator_name = getattr(args, "generator_name", "Qwen-Image")
 
-        timestep_shift = getattr(getattr(args, "model_kwargs", {}), 'timestep_shift', 3.0)
+        timestep_shift = getattr(getattr(args, "model_kwargs", {}), 'timestep_shift', 5.0)
         pretrain_weight = getattr(getattr(args, "model_kwargs", {}), 'pretrain_weight', None)
+        print(f'{timestep_shift=} {pretrain_weight=}\n', end='')
         
         self.generator = QwenImageWrapper(model_name=self.generator_name, timestep_shift=timestep_shift, pretrain_weight=pretrain_weight)
         self.generator.model.requires_grad_(True)
@@ -283,7 +284,7 @@ class T2IBaseModel(nn.Module):
         self.text_encoder = QwenImageTextEncoder(model_name=self.generator_name)
         self.text_encoder.eval().requires_grad_(False)
 
-        self.scheduler = self.generator.get_scheduler()
+        self.scheduler = self.generator.scheduler
         self.scheduler.timesteps = self.scheduler.timesteps.to(device)
 
     def _get_timestep(
@@ -311,29 +312,25 @@ class SelfForcingT2IModel(T2IBaseModel):
 
     def _run_generator(
             self,
-            image_or_video_shape: List[int],
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            image_or_video_shape: List[int], # [b, 16, 1, h//8, w//8]
             conditional_dict: dict,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         # Step 1: Sample noise and backward simulate the generator's input
         assert getattr(self.args, "backward_simulation", True), "Backward simulation needs to be enabled"
-        # [b, img_s, 64]
-        noise_shape = image_or_video_shape.copy()
-        noise = torch.randn(noise_shape, device=self.device, dtype=self.dtype)
+        # [b, 16, 1, h//8, w//8]
+        noise = torch.randn(image_or_video_shape, device=self.device, dtype=self.dtype)
 
         pred_image_or_video, denoised_timestep_from, denoised_timestep_to = self._consistency_backward_simulation(
             noise=noise,
-            img_shapes=img_shapes,
             **conditional_dict
         )
 
-        return pred_image_or_video.to(self.dtype), None, denoised_timestep_from, denoised_timestep_to
+        return pred_image_or_video.to(self.dtype), denoised_timestep_from, denoised_timestep_to
 
     def _consistency_backward_simulation(
             self,
-            noise: torch.Tensor,  # [b, img_s, 64]
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            noise: torch.Tensor,  # [b, 16, 1, h//8, w//8]
             **conditional_dict: dict
     ) -> torch.Tensor:
 
@@ -342,7 +339,6 @@ class SelfForcingT2IModel(T2IBaseModel):
 
         return self.inference_pipeline.inference_with_trajectory(
             noise=noise,
-            img_shapes=img_shapes,
             **conditional_dict,
         )
 

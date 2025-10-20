@@ -4,6 +4,7 @@ from typing import Optional, Tuple, List
 import torch
 
 from model.base import SelfForcingModel, SelfForcingT2IModel
+from diffusers import QwenImagePipeline
 
 
 class DMD(SelfForcingModel):
@@ -392,21 +393,29 @@ class DMDT2I(SelfForcingT2IModel):
 
     def _compute_kl_grad(
             self,
-            noisy_image_or_video: torch.Tensor,
-            estimated_clean_image_or_video: torch.Tensor,
-            timestep: torch.Tensor,
+            noisy_image_or_video: torch.Tensor, # [b, 16, 1, h//8, w//8]
+            estimated_clean_image_or_video: torch.Tensor, # [b, 16, 1, h//8, w//8]
+            timestep: torch.Tensor, # [b]
             conditional_dict: dict,
             unconditional_dict: dict,
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
             normalization: bool = True,
     ) -> Tuple[torch.Tensor, dict]:
 
-        # Step 1: Compute the fake score
+        batch_size, _16, _1, _h, _w = noisy_image_or_video.shape
+
+        # Step 1: Compute the fake score [b, 16, 1, h//8, w//8]
         _, pred_fake_image_cond = self.fake_score(
             noisy_image_or_video=noisy_image_or_video,
             conditional_dict=conditional_dict,
             timestep=timestep,
-            img_shapes=img_shapes,
+        )
+
+        pred_fake_image_cond = QwenImagePipeline._pack_latents(
+            pred_fake_image_cond,
+            batch_size,
+            _16,
+            _h,
+            _w,
         )
 
         if self.fake_guidance_scale != 0.0:
@@ -414,7 +423,14 @@ class DMDT2I(SelfForcingT2IModel):
                 noisy_image_or_video=noisy_image_or_video,
                 conditional_dict=unconditional_dict,
                 timestep=timestep,
-                img_shapes=img_shapes,
+            )
+
+            pred_fake_image_uncond = QwenImagePipeline._pack_latents(
+                pred_fake_image_uncond,
+                batch_size,
+                _16,
+                _h,
+                _w,
             )
 
             comb_pred_fake_image = pred_fake_image_uncond + self.fake_guidance_scale * (
@@ -425,6 +441,13 @@ class DMDT2I(SelfForcingT2IModel):
 
         else:
             pred_fake_image = pred_fake_image_cond
+        
+        pred_fake_image = QwenImagePipeline._unpack_latents(
+            pred_fake_image,
+            _h * 8,
+            _w * 8,
+            8
+        )
 
         # Step 2: Compute the real score
         # We compute the conditional and unconditional prediction
@@ -433,14 +456,28 @@ class DMDT2I(SelfForcingT2IModel):
             noisy_image_or_video=noisy_image_or_video,
             conditional_dict=conditional_dict,
             timestep=timestep,
-            img_shapes=img_shapes,
+        )
+
+        pred_real_image_cond = QwenImagePipeline._pack_latents(
+            pred_real_image_cond,
+            batch_size,
+            _16,
+            _h,
+            _w,
         )
 
         _, pred_real_image_uncond = self.real_score(
             noisy_image_or_video=noisy_image_or_video,
             conditional_dict=unconditional_dict,
             timestep=timestep,
-            img_shapes=img_shapes,
+        )
+
+        pred_real_image_uncond = QwenImagePipeline._pack_latents(
+            pred_real_image_uncond,
+            batch_size,
+            _16,
+            _h,
+            _w,
         )
 
         comb_pred_real_image = pred_real_image_uncond + self.real_guidance_scale * (
@@ -448,6 +485,13 @@ class DMDT2I(SelfForcingT2IModel):
         pred_real_image_cond_norm = torch.norm(pred_real_image_cond, dim=-1, keepdim=True)
         comb_pred_real_image_norm = torch.norm(comb_pred_real_image, dim=-1, keepdim=True)
         pred_real_image = pred_real_image_cond * (pred_real_image_cond_norm / (comb_pred_real_image_norm + 1e-7))
+
+        pred_real_image = QwenImagePipeline._unpack_latents(
+            pred_real_image,
+            _h * 8,
+            _w * 8,
+            8
+        )
 
         # Step 3: Compute the DMD gradient (DMD paper eq. 7).
         grad = (pred_fake_image - pred_real_image)
@@ -467,18 +511,15 @@ class DMDT2I(SelfForcingT2IModel):
 
     def compute_distribution_matching_loss(
             self,
-            image_or_video: torch.Tensor,
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            image_or_video: torch.Tensor, # [b, 16, 1, h//8, w//8]
             conditional_dict: dict,
             unconditional_dict: dict,
-            gradient_mask: Optional[torch.Tensor] = None,
             denoised_timestep_from: int = 0,
             denoised_timestep_to: int = 0,
     ) -> Tuple[torch.Tensor, dict]:
 
+        batch_size, _16, _1, _h, _w = image_or_video.shape
         original_latent = image_or_video
-
-        batch_size = image_or_video.size(0)
 
         with torch.no_grad():
             # Step 1: Randomly sample timestep based on the given schedule and corresponding noise
@@ -511,61 +552,53 @@ class DMDT2I(SelfForcingT2IModel):
                 timestep=timestep,
                 conditional_dict=conditional_dict,
                 unconditional_dict=unconditional_dict,
-                img_shapes=img_shapes,
             )
 
-        if gradient_mask is not None:
-            dmd_loss = 0.5 * F.mse_loss(original_latent.double(
-            )[gradient_mask], (original_latent.double() - grad.double()).detach()[gradient_mask], reduction="mean")
-        else:
-            dmd_loss = 0.5 * F.mse_loss(original_latent.double(
-            ), (original_latent.double() - grad.double()).detach(), reduction="mean")
+        dmd_loss = 0.5 * F.mse_loss(
+            original_latent.float(),
+            (original_latent.float() - grad.float()).detach(),
+            reduction='mean',
+        )
         return dmd_loss, dmd_log_dict
 
     def generator_loss(
             self,
-            image_or_video_shape,
-            img_shapes: List[List[Tuple[int, int, int]]],  # [[1, img_h//16, img_w//16]]
+            image_or_video_shape, # [b, 16, 1, h//8, w//8]
             conditional_dict: dict,
             unconditional_dict: dict,
     ) -> Tuple[torch.Tensor, dict]:
 
         # Step 1: Unroll generator to obtain fake videos
-        pred_image, gradient_mask, denoised_timestep_from, denoised_timestep_to = self._run_generator(
+        pred_image, denoised_timestep_from, denoised_timestep_to = self._run_generator(
             image_or_video_shape=image_or_video_shape,
-            img_shapes=img_shapes,
             conditional_dict=conditional_dict,
         )
 
         # Step 2: Compute the DMD loss
         dmd_loss, dmd_log_dict = self.compute_distribution_matching_loss(
             image_or_video=pred_image,
-            img_shapes=img_shapes,
             conditional_dict=conditional_dict,
             unconditional_dict=unconditional_dict,
-            gradient_mask=gradient_mask,
             denoised_timestep_from=denoised_timestep_from,
             denoised_timestep_to=denoised_timestep_to,
         )
 
-        del pred_image, gradient_mask, denoised_timestep_from, denoised_timestep_to
+        del pred_image, denoised_timestep_from, denoised_timestep_to
 
         return dmd_loss, dmd_log_dict
 
     def critic_loss(
             self,
-            image_or_video_shape,
-            img_shapes: List[Tuple[int, int, int]],  # [[1, img_h//16, img_w//16]]
+            image_or_video_shape, # [b, 16, 1, h//8, w//8]
             conditional_dict: dict,
             unconditional_dict: dict,
     ) -> Tuple[torch.Tensor, dict]:
 
         # Step 1: Run generator on backward simulated noisy input
         with torch.no_grad():
-            generated_image, _, denoised_timestep_from, denoised_timestep_to = self._run_generator(
+            generated_image, denoised_timestep_from, denoised_timestep_to = self._run_generator(
                 image_or_video_shape=image_or_video_shape,
                 conditional_dict=conditional_dict,
-                img_shapes=img_shapes,
             )
 
         # Step 2: Compute the fake prediction
@@ -595,7 +628,6 @@ class DMDT2I(SelfForcingT2IModel):
             noisy_image_or_video=noisy_generated_image,
             conditional_dict=conditional_dict,
             timestep=critic_timestep,
-            img_shapes=img_shapes,
         )
 
         # Step 3: Compute the denoising loss for the fake critic

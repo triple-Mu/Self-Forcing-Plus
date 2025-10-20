@@ -160,10 +160,10 @@ class FlowMatchScheduler():
         """
         Diffusion forward corruption process.
         Input:
-            - clean_latent: the clean latent with shape [B*T, C, H, W]
-            - noise: the noise with shape [B*T, C, H, W]
-            - timestep: the timestep with shape [B*T]
-        Output: the corrupted latent with shape [B*T, C, H, W]
+            - clean_latent: the clean latent with shape [B, C, H, W]
+            - noise: the noise with shape [B, C, H, W]
+            - timestep: the timestep with shape [B]
+        Output: the corrupted latent with shape [B, C, H, W]
         """
         if timestep.ndim == 2:
             timestep = timestep.flatten(0, 1)

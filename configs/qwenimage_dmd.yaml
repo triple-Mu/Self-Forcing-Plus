@@ -16,7 +16,7 @@ denoising_step_list:
 warp_denoising_step: true # need to remove - 0 in denoising_step_list if warp_denoising_step is true
 ts_schedule: false
 num_train_timestep: 1000
-timestep_shift: 3.0
+timestep_shift: 5.0
 guidance_scale: 4.0
 denoising_loss_type: flow
 mixed_precision: true
@@ -46,5 +46,5 @@ distribution_loss: dmd
 trainer: score_distillation
 gradient_checkpointing: true
 model_kwargs:
-  timestep_shift: 3.0
+  timestep_shift: 5.0
   pretrain_weight: 30-step-13000.safetensors
