@@ -268,20 +268,20 @@ class T2IBaseModel(nn.Module):
         self.fake_model_name = getattr(args, "fake_name", "Qwen-Image")
         self.generator_name = getattr(args, "generator_name", "Qwen-Image")
 
-        self.generator = QwenImageWrapper(
-            model_name=self.generator_name,
-            **getattr(args, "model_kwargs", {}),
-        )
+        timestep_shift = getattr(getattr(args, "model_kwargs", {}), 'timestep_shift', 3.0)
+        pretrain_weight = getattr(getattr(args, "model_kwargs", {}), 'pretrain_weight', None)
+        
+        self.generator = QwenImageWrapper(model_name=self.generator_name, timestep_shift=timestep_shift, pretrain_weight=pretrain_weight)
         self.generator.model.requires_grad_(True)
 
-        self.real_score = QwenImageWrapper(model_name=self.real_model_name)
-        self.real_score.model.requires_grad_(False)
+        self.real_score = QwenImageWrapper(model_name=self.real_model_name, pretrain_weight=pretrain_weight)
+        self.real_score.model.eval().requires_grad_(False)
 
-        self.fake_score = QwenImageWrapper(model_name=self.fake_model_name)
+        self.fake_score = QwenImageWrapper(model_name=self.fake_model_name, pretrain_weight=pretrain_weight)
         self.fake_score.model.requires_grad_(True)
 
         self.text_encoder = QwenImageTextEncoder(model_name=self.generator_name)
-        self.text_encoder.requires_grad_(False)
+        self.text_encoder.eval().requires_grad_(False)
 
         self.scheduler = self.generator.get_scheduler()
         self.scheduler.timesteps = self.scheduler.timesteps.to(device)

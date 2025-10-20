@@ -62,6 +62,7 @@ class QwenImageWrapper(nn.Module):
             self,
             model_name="Qwen-Image",
             timestep_shift=8.0,
+            pretrain_weight=None,
             **kwargs,
     ):
         super().__init__()
@@ -75,6 +76,11 @@ class QwenImageWrapper(nn.Module):
         # kw['num_layers'] = 1
 
         self.model = QwenImageTransformer2DModel(**kw)
+        if pretrain_weight is not None:
+            from safetensors.torch import load_file
+            state_dict = load_file(pretrain_weight)
+            self.model.load_state_dict(state_dict, strict=True)
+            print(f'load {pretrain_weight} finish!\n', end='')
 
         self.scheduler = FlowMatchScheduler(
             shift=timestep_shift, sigma_min=0.0, extra_one_step=True

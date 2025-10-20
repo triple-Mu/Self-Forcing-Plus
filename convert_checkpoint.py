@@ -28,7 +28,7 @@ def main():
     
     # Load the input checkpoint
     print(f"Loading checkpoint from {input_path}...")
-    checkpoint = torch.load(input_path, map_location=torch.device('cpu'))
+    checkpoint = torch.load(input_path, map_location=torch.device('cpu'), mmap=True)
 
     model_type = "generator_ema" if use_ema else "generator"
     
