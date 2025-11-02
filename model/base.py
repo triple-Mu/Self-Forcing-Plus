@@ -134,65 +134,23 @@ class SelfForcingModel(BaseModel):
         """
         # Step 1: Sample noise and backward simulate the generator's input
         assert getattr(self.args, "backward_simulation", True), "Backward simulation needs to be enabled"
-        if initial_latent is not None:
-            conditional_dict["initial_latent"] = initial_latent
+        # if initial_latent is not None:
+            # conditional_dict["initial_latent"] = initial_latent
         if self.args.i2v:
-            noise_shape = [image_or_video_shape[0], image_or_video_shape[1] - 1, *image_or_video_shape[2:]]
+            noise_shape = image_or_video_shape.copy()
         else:
             noise_shape = image_or_video_shape.copy()
 
-        # During training, the number of generated frames should be uniformly sampled from
-        # [21, self.num_training_frames], but still being a multiple of self.num_frame_per_block
-        min_num_frames = 20 if self.args.independent_first_frame else 21
-        max_num_frames = self.num_training_frames - 1 if self.args.independent_first_frame else self.num_training_frames
-        assert max_num_frames % self.num_frame_per_block == 0
-        assert min_num_frames % self.num_frame_per_block == 0
-        max_num_blocks = max_num_frames // self.num_frame_per_block
-        min_num_blocks = min_num_frames // self.num_frame_per_block
-        num_generated_blocks = torch.randint(min_num_blocks, max_num_blocks + 1, (1,), device=self.device)
-        dist.broadcast(num_generated_blocks, src=0)
-        num_generated_blocks = num_generated_blocks.item()
-        num_generated_frames = num_generated_blocks * self.num_frame_per_block
-        if self.args.independent_first_frame and initial_latent is None:
-            num_generated_frames += 1
-            min_num_frames += 1
-        # Sync num_generated_frames across all processes
-        noise_shape[1] = num_generated_frames
-
+        noise = torch.randn(noise_shape, device=self.device, dtype=self.dtype)
         pred_image_or_video, denoised_timestep_from, denoised_timestep_to = self._consistency_backward_simulation(
-            noise=torch.randn(noise_shape,
-                              device=self.device, dtype=self.dtype),
+            noise=noise,
             clip_fea=clip_fea,
             y=y,
             **conditional_dict
         )
-        # Slice last 21 frames
-        if pred_image_or_video.shape[1] > 21:
-            with torch.no_grad():
-                # Reencode to get image latent
-                latent_to_decode = pred_image_or_video[:, :-20, ...]
-                # Deccode to video
-                pixels = self.vae.decode_to_pixel(latent_to_decode)
-                frame = pixels[:, -1:, ...].to(self.dtype)
-                frame = rearrange(frame, "b t c h w -> b c t h w")
-                # Encode frame to get image latent
-                image_latent = self.vae.encode_to_latent(frame).to(self.dtype)
-            pred_image_or_video_last_21 = torch.cat([image_latent, pred_image_or_video[:, -20:, ...]], dim=1)
-        else:
-            pred_image_or_video_last_21 = pred_image_or_video
 
-        if num_generated_frames != min_num_frames:
-            # Currently, we do not use gradient for the first chunk, since it contains image latents
-            gradient_mask = torch.ones_like(pred_image_or_video_last_21, dtype=torch.bool)
-            if self.args.independent_first_frame:
-                gradient_mask[:, :1] = False
-            else:
-                gradient_mask[:, :self.num_frame_per_block] = False
-        else:
-            gradient_mask = None
-
-        pred_image_or_video_last_21 = pred_image_or_video_last_21.to(self.dtype)
-        return pred_image_or_video_last_21, gradient_mask, denoised_timestep_from, denoised_timestep_to
+        gradient_mask = None
+        return pred_image_or_video.to(self.dtype), gradient_mask, denoised_timestep_from, denoised_timestep_to
 
     def _consistency_backward_simulation(
         self,

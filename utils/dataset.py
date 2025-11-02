@@ -248,3 +248,18 @@ def cycle(dl):
     while True:
         for data in dl:
             yield data
+
+
+class FakeDataset(Dataset):
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def __len__(self) -> int:
+        return 1000
+
+    def __getitem__(self, idx) -> dict:
+
+        return {
+            "prompts": 'a dog',
+            "latent": torch.randn((16, 21, 40, 80), dtype=torch.float32),
+        }

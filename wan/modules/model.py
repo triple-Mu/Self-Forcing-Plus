@@ -332,22 +332,25 @@ class WanAttentionBlock(nn.Module):
         """
         # assert e.dtype == torch.float32
         # with amp.autocast(dtype=torch.float32):
-        e = (self.modulation + e).chunk(6, dim=1)
+        num_frames = e.size(1)
+        e = (self.modulation[:, None] + e).chunk(6, dim=2)
         # assert e[0].dtype == torch.float32
 
         # self-attention
+        modulate = self.norm1(x).unflatten(1, (num_frames, -1)) * (1 + e[1]) + e[0]
         y = self.self_attn(
-            self.norm1(x) * (1 + e[1]) + e[0], seq_lens, grid_sizes,
+            modulate.flatten(1, 2), seq_lens, grid_sizes,
             freqs)
         # with amp.autocast(dtype=torch.float32):
-        x = x + y * e[2]
+        x = x + (y.unflatten(1, (num_frames, -1)) * e[2]).flatten(1, 2)
 
         # cross-attention & ffn function
         def cross_attn_ffn(x, context, context_lens, e):
             x = x + self.cross_attn(self.norm3(x), context, context_lens)
-            y = self.ffn(self.norm2(x) * (1 + e[4]) + e[3])
+            modulate = self.norm2(x).unflatten(1, (num_frames, -1)) * (1 + e[4]) + e[3]
+            y = self.ffn(modulate.flatten(1, 2))
             # with amp.autocast(dtype=torch.float32):
-            x = x + y * e[5]
+            x = x + (y.unflatten(1, (num_frames, -1)) * e[5]).flatten(1, 2)
             return x
 
         x = cross_attn_ffn(x, context, context_lens, e)
@@ -461,8 +464,10 @@ class Head(nn.Module):
         """
         # assert e.dtype == torch.float32
         # with amp.autocast(dtype=torch.float32):
-        e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
-        x = (self.head(self.norm(x) * (1 + e[1]) + e[0]))
+        num_frames = e.size(1)
+        e = (self.modulation[:, None] + e[:, :, None]).chunk(2, dim=2)
+        modulate = self.norm(x).unflatten(1, (num_frames, -1)) * (1 + e[1]) + e[0]
+        x = self.head(modulate.flatten(1, 2))
         return x
 
 
@@ -620,8 +625,6 @@ class WanModel(ModelMixin, ConfigMixin):
 
         self.gradient_checkpointing = False
 
-    def _set_gradient_checkpointing(self, module, value=False):
-        self.gradient_checkpointing = value
 
     def forward(
         self,
@@ -677,7 +680,7 @@ class WanModel(ModelMixin, ConfigMixin):
             self.freqs = self.freqs.to(device)
 
         if y is not None:
-            x = [torch.cat([u.squeeze(0), v], dim=0) for u, v in zip(x, y)]
+            x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
@@ -694,8 +697,8 @@ class WanModel(ModelMixin, ConfigMixin):
         # time embeddings
         # with amp.autocast(dtype=torch.float32):
         e = self.time_embedding(
-            sinusoidal_embedding_1d(self.freq_dim, t).type_as(x))
-        e0 = self.time_projection(e).unflatten(1, (6, self.dim))
+            sinusoidal_embedding_1d(self.freq_dim, t.flatten()).unflatten(0, t.shape).type_as(x))
+        e0 = self.time_projection(e).unflatten(2, (6, self.dim))
         # assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
         # context
@@ -709,7 +712,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
-            context = torch.concat([context_clip, context], dim=1)
+            context = torch.cat([context_clip, context], dim=1)
 
         # arguments
         kwargs = dict(
@@ -842,7 +845,7 @@ class WanModel(ModelMixin, ConfigMixin):
 
         if clip_fea is not None:
             context_clip = self.img_emb(clip_fea)  # bs x 257 x dim
-            context = torch.concat([context_clip, context], dim=1)
+            context = torch.cat([context_clip, context], dim=1)
 
         # arguments
         kwargs = dict(

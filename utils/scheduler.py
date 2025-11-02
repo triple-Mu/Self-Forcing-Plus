@@ -42,7 +42,7 @@ class SchedulerInterface(ABC):
                                                  self.alphas_cumprod]
         )
 
-        alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1, 1, 1)
+        alpha_prod_t = alphas_cumprod[timestep].reshape(1, -1, 1, 1)
         beta_prod_t = 1 - alpha_prod_t
 
         noise_pred = (xt - alpha_prod_t **
@@ -67,7 +67,7 @@ class SchedulerInterface(ABC):
             lambda x: x.double().to(noise.device), [noise, xt,
                                                     self.alphas_cumprod]
         )
-        alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1, 1, 1)
+        alpha_prod_t = alphas_cumprod[timestep].reshape(1, -1, 1, 1)
         beta_prod_t = 1 - alpha_prod_t
 
         x0_pred = (xt - beta_prod_t **
@@ -96,7 +96,7 @@ class SchedulerInterface(ABC):
             lambda x: x.double().to(velocity.device), [velocity, xt,
                                                        self.alphas_cumprod]
         )
-        alpha_prod_t = alphas_cumprod[timestep].reshape(-1, 1, 1, 1)
+        alpha_prod_t = alphas_cumprod[timestep].reshape(1, -1, 1, 1)
         beta_prod_t = 1 - alpha_prod_t
 
         x0_pred = (alpha_prod_t ** 0.5) * xt - (beta_prod_t ** 0.5) * velocity
@@ -147,12 +147,12 @@ class FlowMatchScheduler():
         self.timesteps = self.timesteps.to(model_output.device)
         timestep_id = torch.argmin(
             (self.timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        sigma = self.sigmas[timestep_id].reshape(1, -1, 1, 1)
         if to_final or (timestep_id + 1 >= len(self.timesteps)).any():
             sigma_ = 1 if (
                 self.inverse_timesteps or self.reverse_sigmas) else 0
         else:
-            sigma_ = self.sigmas[timestep_id + 1].reshape(-1, 1, 1, 1)
+            sigma_ = self.sigmas[timestep_id + 1].reshape(1, -1, 1, 1)
         prev_sample = sample + model_output * (sigma_ - sigma)
         return prev_sample
 
@@ -171,7 +171,7 @@ class FlowMatchScheduler():
         self.timesteps = self.timesteps.to(noise.device)
         timestep_id = torch.argmin(
             (self.timesteps.unsqueeze(0) - timestep.unsqueeze(1)).abs(), dim=1)
-        sigma = self.sigmas[timestep_id].reshape(-1, 1, 1, 1)
+        sigma = self.sigmas[timestep_id].reshape(1, -1, 1, 1)
         sample = (1 - sigma) * original_samples + sigma * noise
         return sample.type_as(noise)
 

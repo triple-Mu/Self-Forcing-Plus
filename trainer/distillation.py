@@ -1,7 +1,7 @@
 import gc
 import logging
 
-from utils.dataset import ShardingLMDBDataset, cycle
+from utils.dataset import ShardingLMDBDataset, cycle, FakeDataset
 from utils.dataset import TextDataset, TextFolderDataset
 from utils.distributed import EMA_FSDP, fsdp_wrap, fsdp_state_dict, launch_distributed_job
 from utils.misc import (
@@ -135,13 +135,14 @@ class Trainer:
         if self.config.i2v:
             dataset = ShardingLMDBDataset(config.data_path, max_pair=int(1e8))
         else:
-            if self.config.data_type == "text_folder":
-                data_max_count = config.get("data_max_count", 30000)
-                dataset = TextFolderDataset(config.data_path, data_max_count)
-            elif self.config.data_type == "text_file":
-                dataset = TextDataset(config.data_path)
-            else:
-                raise ValueError("Invalid data type")
+            # if self.config.data_type == "text_folder":
+            #     data_max_count = config.get("data_max_count", 30000)
+            #     dataset = TextFolderDataset(config.data_path, data_max_count)
+            # elif self.config.data_type == "text_file":
+            #     dataset = TextDataset(config.data_path)
+            # else:
+            #     raise ValueError("Invalid data type")
+            dataset = FakeDataset()
             
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset, shuffle=True, drop_last=True)
@@ -149,7 +150,7 @@ class Trainer:
             dataset,
             batch_size=config.batch_size,
             sampler=sampler,
-            num_workers=8)
+            num_workers=0)
 
         if dist.get_rank() == 0:
             print("DATASET SIZE %d" % len(dataset))
@@ -277,8 +278,9 @@ class Trainer:
             image_latent = None
 
         batch_size = len(text_prompts)
-        image_or_video_shape = list(self.config.image_or_video_shape)
-        image_or_video_shape[0] = batch_size
+        # image_or_video_shape = list(self.config.image_or_video_shape)
+        # image_or_video_shape[0] = batch_size
+        image_or_video_shape = [batch_size, 16, 21, 40, 80]
 
         # Step 2: Extract the conditional infos
         with torch.no_grad():

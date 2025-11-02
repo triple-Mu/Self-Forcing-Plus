@@ -1,4 +1,4 @@
-from pipeline import SelfForcingTrainingPipeline
+from pipeline import SelfForcingTrainingPipeline, BidirectionalTrainingPipeline
 import torch.nn.functional as F
 from typing import Optional, Tuple
 import torch
@@ -14,22 +14,22 @@ class DMD(SelfForcingModel):
         in the forward pass.
         """
         super().__init__(args, device)
-        self.num_frame_per_block = getattr(args, "num_frame_per_block", 1)
-        self.same_step_across_blocks = getattr(args, "same_step_across_blocks", True)
-        self.num_training_frames = getattr(args, "num_training_frames", 21)
-
-        if self.num_frame_per_block > 1:
-            self.generator.model.num_frame_per_block = self.num_frame_per_block
-
-        self.independent_first_frame = getattr(args, "independent_first_frame", False)
-        if self.independent_first_frame:
-            self.generator.model.independent_first_frame = True
+        # self.num_frame_per_block = getattr(args, "num_frame_per_block", 1)
+        # self.same_step_across_blocks = getattr(args, "same_step_across_blocks", True)
+        # self.num_training_frames = getattr(args, "num_training_frames", 21)
+        
+        # if self.num_frame_per_block > 1:
+        #     self.generator.model.num_frame_per_block = self.num_frame_per_block
+        
+        # self.independent_first_frame = getattr(args, "independent_first_frame", False)
+        # if self.independent_first_frame:
+        #     self.generator.model.independent_first_frame = True
         if args.gradient_checkpointing:
             self.generator.enable_gradient_checkpointing()
             self.fake_score.enable_gradient_checkpointing()
 
         # this will be init later with fsdp-wrapped modules
-        self.inference_pipeline: SelfForcingTrainingPipeline = None
+        self.inference_pipeline: BidirectionalTrainingPipeline = None
 
         # Step 2: Initialize all dmd hyperparameters
         self.num_train_timestep = args.num_train_timestep
@@ -159,19 +159,27 @@ class DMD(SelfForcingModel):
         """
         original_latent = image_or_video
 
-        batch_size, num_frame = image_or_video.shape[:2]
+        batch_size, num_frame = image_or_video.size(0), image_or_video.size(2)
 
         with torch.no_grad():
             # Step 1: Randomly sample timestep based on the given schedule and corresponding noise
             min_timestep = denoised_timestep_to if self.ts_schedule and denoised_timestep_to is not None else self.min_score_timestep
             max_timestep = denoised_timestep_from if self.ts_schedule_max and denoised_timestep_from is not None else self.num_train_timestep
-            timestep = self._get_timestep(
+            # timestep = self._get_timestep(
+            #     min_timestep,
+            #     max_timestep,
+            #     batch_size,
+            #     num_frame,
+            #     self.num_frame_per_block,
+            #     uniform_timestep=True
+            # )
+
+            timestep = torch.randint(
                 min_timestep,
                 max_timestep,
-                batch_size,
-                num_frame,
-                self.num_frame_per_block,
-                uniform_timestep=True
+                (batch_size, 1),
+                dtype=torch.int64,
+                device=self.device,
             )
 
             # TODO:should we change it to `timestep = self.scheduler.timesteps[timestep]`?
@@ -180,13 +188,15 @@ class DMD(SelfForcingModel):
                     (timestep / 1000) / \
                     (1 + (self.timestep_shift - 1) * (timestep / 1000)) * 1000
             timestep = timestep.clamp(self.min_step, self.max_step)
+            timestep = timestep.tile(1, num_frame)
+            timestep[:, :5].zero_()
 
             noise = torch.randn_like(image_or_video)
             noisy_latent = self.scheduler.add_noise(
                 image_or_video.flatten(0, 1),
                 noise.flatten(0, 1),
                 timestep.flatten(0, 1)
-            ).detach().unflatten(0, (batch_size, num_frame))
+            ).detach().unflatten(0, (batch_size, -1))
 
             # Step 2: Compute the KL grad
             grad, dmd_log_dict = self._compute_kl_grad(
@@ -291,16 +301,26 @@ class DMD(SelfForcingModel):
                 y=y
             )
 
+        batch_size, num_frame = image_or_video_shape[0], image_or_video_shape[2]
+
         # Step 2: Compute the fake prediction
         min_timestep = denoised_timestep_to if self.ts_schedule and denoised_timestep_to is not None else self.min_score_timestep
         max_timestep = denoised_timestep_from if self.ts_schedule_max and denoised_timestep_from is not None else self.num_train_timestep
-        critic_timestep = self._get_timestep(
+        # critic_timestep = self._get_timestep(
+        #     min_timestep,
+        #     max_timestep,
+        #     image_or_video_shape[0],
+        #     image_or_video_shape[1],
+        #     self.num_frame_per_block,
+        #     uniform_timestep=True
+        # )
+
+        critic_timestep = torch.randint(
             min_timestep,
             max_timestep,
-            image_or_video_shape[0],
-            image_or_video_shape[1],
-            self.num_frame_per_block,
-            uniform_timestep=True
+            (batch_size, 1),
+            dtype=torch.int64,
+            device=self.device,
         )
 
         if self.timestep_shift > 1:
@@ -308,13 +328,15 @@ class DMD(SelfForcingModel):
                 (critic_timestep / 1000) / (1 + (self.timestep_shift - 1) * (critic_timestep / 1000)) * 1000
 
         critic_timestep = critic_timestep.clamp(self.min_step, self.max_step)
+        critic_timestep = critic_timestep.tile(1, num_frame)
+        critic_timestep[:, :5].zero_()
 
         critic_noise = torch.randn_like(generated_image)
         noisy_generated_image = self.scheduler.add_noise(
             generated_image.flatten(0, 1),
             critic_noise.flatten(0, 1),
             critic_timestep.flatten(0, 1)
-        ).unflatten(0, image_or_video_shape[:2])
+        ).unflatten(0, (batch_size, -1))
 
         _, pred_fake_image = self.fake_score(
             noisy_image_or_video=noisy_generated_image,
@@ -340,7 +362,7 @@ class DMD(SelfForcingModel):
                 x0=pred_fake_image.flatten(0, 1),
                 xt=noisy_generated_image.flatten(0, 1),
                 timestep=critic_timestep.flatten(0, 1)
-            ).unflatten(0, image_or_video_shape[:2])
+            ).unflatten(0, (batch_size, -1))
 
         denoising_loss = self.denoising_loss_func(
             x=generated_image.flatten(0, 1),

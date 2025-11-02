@@ -34,10 +34,10 @@ beta2: 0.999
 beta1_critic: 0.0
 beta2_critic: 0.999
 data_type: text_folder
-data_path: prompts/good_prompts/
+data_path: prompts.txt
 data_max_count: 30000
 batch_size: 1
-ema_weight: 0.99
+ema_weight: -1.0
 ema_start_step: 200
 total_batch_size: 64
 log_iters: 200
@@ -45,10 +45,10 @@ negative_prompt: '色调艳丽，过曝，静态，细节模糊不清，字幕�
 dfake_gen_update_ratio: 5
 image_or_video_shape:
 - 1
-- 21
 - 16
-- 60
-- 104
+- 21
+- 90
+- 160
 distribution_loss: dmd
 trainer: score_distillation
 gradient_checkpointing: true

@@ -55,14 +55,22 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
         noisy_image_or_video = noise
         num_denoising_steps = len(self.denoising_step_list)
         exit_flags = self.generate_and_sync_list(num_denoising_steps, device=noise.device)
+        batch_size, num_frames = noise.size(0), noise.size(2)
 
         # use the last n-1 timesteps to simulate the generator's input
         for index, current_timestep in enumerate(self.denoising_step_list):
             exit_flag = (index == exit_flags[0])
-            timestep = torch.ones(
-                noise.shape[:2],
+            # timestep = torch.ones(
+            #     noise.shape[:2],
+            #     device=noise.device,
+            #     dtype=torch.int64) * current_timestep
+            timestep = torch.full(
+                (batch_size, num_frames),
+                fill_value=current_timestep,
+                dtype=torch.int64,
                 device=noise.device,
-                dtype=torch.int64) * current_timestep
+            )
+            timestep[:, :5].zero_()
             if not exit_flag:
                 with torch.no_grad():
                     _, denoised_pred = self.generator(
@@ -73,14 +81,21 @@ class BidirectionalTrainingPipeline(torch.nn.Module):
                         y=y
                     )  # [B, F, C, H, W]
 
-                    next_timestep = self.denoising_step_list[index + 1] * torch.ones(
-                        noise.shape[:2], dtype=torch.long, device=noise.device)
+                    # next_timestep = self.denoising_step_list[index + 1] * torch.ones(
+                    #     noise.shape[:2], dtype=torch.long, device=noise.device)
+                    next_timestep = torch.full(
+                        (batch_size, num_frames),
+                        fill_value=self.denoising_step_list[index + 1],
+                        dtype=torch.int64,
+                        device=noise.device,
+                    )
+                    next_timestep[:, :5].zero_()
 
                     noisy_image_or_video = self.scheduler.add_noise(
                         denoised_pred.flatten(0, 1),
                         torch.randn_like(denoised_pred.flatten(0, 1)),
                         next_timestep.flatten(0, 1)
-                    ).unflatten(0, denoised_pred.shape[:2])
+                    ).unflatten(0, (batch_size, -1))
             else:
                 _, denoised_pred = self.generator(
                     noisy_image_or_video=noisy_image_or_video,

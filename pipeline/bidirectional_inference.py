@@ -47,24 +47,38 @@ class BidirectionalInferencePipeline(torch.nn.Module):
 
         # initial point
         noisy_image_or_video = noise
+        batch_size, num_frames = noise.size(0), noise.size(2)
 
         # use the last n-1 timesteps to simulate the generator's input
         for index, current_timestep in enumerate(self.denoising_step_list[:-1]):
+            current_timestep = torch.full(
+                (batch_size, num_frames),
+                fill_value=current_timestep,
+                dtype=torch.int64,
+                device=noise.device,
+            )
+            current_timestep[:, :5].zero_()
             _, pred_image_or_video = self.generator(
                 noisy_image_or_video=noisy_image_or_video,
                 conditional_dict=conditional_dict,
-                timestep=torch.ones(
-                    noise.shape[:2], dtype=torch.long, device=noise.device) * current_timestep
+                timestep=current_timestep,
             )  # [B, F, C, H, W]
 
-            next_timestep = self.denoising_step_list[index + 1] * torch.ones(
-                noise.shape[:2], dtype=torch.long, device=noise.device)
+            # next_timestep = self.denoising_step_list[index + 1] * torch.ones(
+            #     noise.shape[:2], dtype=torch.long, device=noise.device)
+            next_timestep = torch.full(
+                (batch_size, num_frames),
+                fill_value=self.denoising_step_list[index + 1],
+                dtype=torch.int64,
+                device=noise.device,
+            )
+            next_timestep[:, :5].zero_()
 
             noisy_image_or_video = self.scheduler.add_noise(
                 pred_image_or_video.flatten(0, 1),
                 torch.randn_like(pred_image_or_video.flatten(0, 1)),
                 next_timestep.flatten(0, 1)
-            ).unflatten(0, noise.shape[:2])
+            ).unflatten(0, (batch_size, -1))
 
         video = self.vae.decode_to_pixel(pred_image_or_video)
         video = (video * 0.5 + 0.5).clamp(0, 1)
